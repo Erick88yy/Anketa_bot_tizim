@@ -17,6 +17,7 @@ user_last_submission = {}
 survey_counter = 1 # Global anketalar uchun ketma-ket ID (1 dan boshlanadi)
 
 def format_remaining_time(seconds):
+if seconds > 0:
 hours = int(seconds // 3600)
 minutes = int((seconds % 3600) // 60)
 seconds = int(seconds % 60)
