@@ -49,7 +49,7 @@ dp = Dispatcher(bot, storage=MemoryStorage())
 # Har bir til uchun matnlar, variantlar va sarlavhalar
 MESSAGES = {
     "O'zbek": {
-        "welcome_text": "**Assalom Aleykum!**\nIltimos, menudan anketa tilini tanlang:",
+        "welcome_text": "Assalom Aleykum!\nIltimos, menudan anketa tilini tanlang:",
         "ask_name": "1. Ismingizni kiriting:",
         "ask_age": "2. Yoshingizni kiriting (Masalan, 23 yoki 36):",
         "ask_parameter": "3. Parametrlaringizni kiriting (Masalan: 178-65-18):",
@@ -94,7 +94,7 @@ MESSAGES = {
         "goal_options": ["Do'stlik", "Seks", "Oila qurish", "Vertual aloqa", "Eskort"]
     },
     "Русский": {
-        "welcome_text": "**Привет! Добро пожаловать!**\nПожалуйста, выберите язык анкеты:",
+        "welcome_text": "Привет! Добро пожаловать!\nПожалуйста, выберите язык анкеты:",
         "ask_name": "1. Введите ваше имя:",
         "ask_age": "2. Введите ваш возраст (например, 23 или 36):",
         "ask_parameter": "3. Введите ваши параметры (например: 178-65-18):",
@@ -139,7 +139,7 @@ MESSAGES = {
         "goal_options": ["Дружба", "Секс", "Создание семьи", "Виртуальное общение", "Эскорт"]
     },
     "English": {
-        "welcome_text": "**Hello! Welcome!**\nPlease select the survey language:",
+        "welcome_text": "Hello! Welcome!\nPlease select the survey language:",
         "ask_name": "1. Please enter your name:",
         "ask_age": "2. Please enter your age (e.g., 23 or 36):",
         "ask_parameter": "3. Please enter your parameters (e.g., 178-65-18):",
@@ -189,7 +189,7 @@ MESSAGES = {
 async def send_welcome(message: types.Message, state: FSMContext):
     # Avvalgi foydalanuvchi holatini tozalash
     await state.finish()
-    
+
     user_id = message.from_user.id
     current_time = time.time()
     # Agar foydalanuvchi ilgari anketa yuborgan bo'lsa, ularning tilini olish:
@@ -221,14 +221,14 @@ async def send_welcome(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=Form.language)
 async def process_language(message: types.Message, state: FSMContext):
-    # Agar foydalanuvchi menyudan til variantini tanlamasa, 3 ta tilda xabar chiqadi:
+    # Faqat menyudan to'g'ri variant tanlanmasa, 3 ta til uchun xatolik habarini yuboramiz
     if message.text not in ["O'zbek", "Русский", "English"]:
         error_msg = (
             MESSAGES["O'zbek"]["invalid_language"] + "\n" +
             MESSAGES["Русский"]["invalid_language"] + "\n" +
             MESSAGES["English"]["invalid_language"]
         )
-        await message.answer(error_msg)
+        await message.answer(error_msg, parse_mode="Markdown")
         return
     await state.update_data(language=message.text)
     await Form.next()
@@ -334,10 +334,10 @@ async def process_role(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=Form.city)
 async def process_city(message: types.Message, state: FSMContext):
+    await state.update_data(city=message.text)
     data = await state.get_data()
     language = data.get("language", "O'zbek")
     localized = MESSAGES[language]
-    await state.update_data(city=message.text)
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
     for goal in localized["goal_options"]:
         keyboard.add(KeyboardButton(goal))
