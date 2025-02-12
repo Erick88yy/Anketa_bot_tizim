@@ -12,9 +12,9 @@ ADMIN_CHAT_ID = 7888045216
 
 SESSION_TIMEOUT = 6 * 60 * 60  # 6 soat
 
-# Foydalanuvchi oxirgi yuborgan anketasi haqidagi ma'lumotlar (timestamp va til)
+# Foydalanuvchi oxirgi yuborgan anketasi haqidagi maʼlumotlar (timestamp va til)
 user_last_submission = {}
-survey_counter = 1  # Global anketalar uchun ketma-ket ID (1 dan boshlanadi)
+survey_counter = 1  # Har bir yaratigan anketaga 1 dan boshlab oshib boruvchi yagona ID
 
 def format_remaining_time(seconds):
     hours = int(seconds // 3600)
@@ -185,7 +185,8 @@ MESSAGES = {
     }
 }
 
-# /start buyrug‘i: Avvalgi holat tozalanadi va agar 6 soat ichida anketa to‘ldirilgan bo‘lsa, so‘nggi yuborilgan vaqt va qolgan kutish vaqti tanlangan tilga mos ko‘rsatiladi.
+# /start handler: Avvalgi holat tozalanadi, agar foydalanuvchi oxirgi anketa yuborilganidan keyin 6 soat o'tmagan bo'lsa,
+# tanlangan til asosida oxirgi yuborilgan vaqt va qolgan kutish vaqti ko'rsatiladi.
 @dp.message_handler(commands=['start'])
 async def send_welcome(message: types.Message, state: FSMContext):
     await state.finish()
@@ -217,7 +218,7 @@ async def send_welcome(message: types.Message, state: FSMContext):
     await message.reply(welcome_text, reply_markup=keyboard, parse_mode="Markdown")
     await Form.language.set()
 
-# Tilni tanlash: Agar noto'g'ri kiritsa, uchala tilning xatolik habarlarini yuboramiz.
+# Til tanlash: Faqat Form.language holatida agar noto'g'ri variant kiritsa, uchala tilning xatolik habarlarini yuboramiz va klaviaturani yopamiz.
 @dp.message_handler(state=Form.language)
 async def process_language(message: types.Message, state: FSMContext):
     if message.text not in ["O'zbek", "Русский", "English"]:
@@ -226,7 +227,7 @@ async def process_language(message: types.Message, state: FSMContext):
             MESSAGES["Русский"]["invalid_language"] + "\n" +
             MESSAGES["English"]["invalid_language"]
         )
-        await message.answer(error_msg, parse_mode="Markdown")
+        await message.answer(error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
         return
     await state.update_data(language=message.text)
     await Form.next()
@@ -315,7 +316,7 @@ async def process_parameter_confirm(message: types.Message, state: FSMContext):
         await Form.next()
         await message.answer(localized["ask_role"], reply_markup=role_keyboard, parse_mode="Markdown")
     else:
-        await message.answer(localized["survey_restart"], reply_markup=ReplyKeyboardRemove())
+        await message.answer(localized["survey_cancelled"], reply_markup=ReplyKeyboardRemove())
         await state.finish()
 
 @dp.message_handler(state=Form.role)
@@ -398,7 +399,7 @@ async def process_photo_upload(message: types.Message, state: FSMContext):
         data = await state.get_data()
         language = data.get("language", "O'zbek")
         localized = MESSAGES[language]
-        await message.answer(localized["invalid_photo"])
+        await message.answer(localized["invalid_photo"], reply_markup=ReplyKeyboardRemove())
         return
     await state.update_data(photo_upload=message.photo[-1].file_id)
     data = await state.get_data()
@@ -468,7 +469,7 @@ async def process_partner_about(message: types.Message, state: FSMContext):
     await Form.next()
     await message.answer(localized["ask_confirmation"], reply_markup=keyboard, parse_mode="Markdown")
 
-# Tasdiqlash bosqichi: agar foydalanuvchi tasdiqlasa, natija foydalanuvchiga va admin ga yuboriladi.
+# Tasdiqlash bosqichi: Agar foydalanuvchi tasdiqlasa, natija foydalanuvchiga va adminga yuboriladi.
 @dp.message_handler(state=Form.confirmation)
 async def process_confirmation(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -484,12 +485,13 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         return
 
     if message.text == valid_choices[language][0]:
-        # So'ngi anketani yuborish vaqtini qayd etamiz
         user_id = message.from_user.id
-        user_last_submission[user_id] = {"timestamp": time.time(), "language": language}
+        # Yaratilgan anketa uchun yagona raqam (ID)
         global survey_counter
         current_id = survey_counter
         survey_counter += 1
+        # Foydalanuvchining anketa yuborilgan vaqtini qayd etamiz
+        user_last_submission[user_id] = {"timestamp": time.time(), "language": language}
 
         result_text = (
             f"<b>{localized['survey_number']}:</b> {current_id}\n\n"
@@ -509,7 +511,6 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             f"<b>{localized['partner_about']}:</b> {data.get('partner_about')}\n"
         )
 
-        # Foydalanuvchiga natijani yuboramiz (rasm bo'lsa, rasm bilan)
         if data.get('photo_upload'):
             await message.answer_photo(
                 data['photo_upload'],
@@ -525,7 +526,6 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             )
         await message.answer(localized["survey_accepted"], parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
 
-        # Adminga ham yuboramiz
         if data.get('photo_upload'):
             await bot.send_photo(
                 ADMIN_CHAT_ID,
