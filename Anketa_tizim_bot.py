@@ -1,8 +1,6 @@
 import time
 import re
-import json
 import asyncio
-import aiosqlite
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -14,55 +12,24 @@ API_TOKEN = "7543816231:AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"
 ADMIN_CHAT_ID = 7888045216
 SESSION_TIMEOUT = 6 * 60 * 60  # 6 soat
 
-DB_PATH = "surveys.db"
+# Foydalanuvchi oxirgi yuborgan anketasi haqidagi maʼlumotlar (timestamp va til)
+user_last_submission = {}
 
-# ---------------- Database Funksiyalari ----------------
+def format_remaining_time(seconds):
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
-async def init_db():
-    """Ma'lumotlar bazasini yaratish (agar mavjud bo'lmasa)"""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS submissions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                timestamp REAL,
-                language TEXT,
-                data TEXT
-            )
-        """)
-        await db.commit()
-
-async def get_last_submission(user_id: int):
-    """Berilgan user_id bo'yicha so'nggi anketani qaytaradi (timestamp, language)"""
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT timestamp, language FROM submissions WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1", 
-            (user_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return row  # Agar topilmasa, None
-
-async def insert_submission(user_id: int, language: str, data: dict):
-    """Yangi anketani bazaga yozib, uning avtomatik generatsiyalangan ID va timestamp ni qaytaradi"""
-    now = time.time()
-    data_json = json.dumps(data)
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "INSERT INTO submissions (user_id, timestamp, language, data) VALUES (?, ?, ?, ?)",
-            (user_id, now, language, data_json)
-        )
-        await db.commit()
-        submission_id = cursor.lastrowid
-        return submission_id, now
-
-# ---------------- FSM va Matnlar ----------------
+def format_submission_time(timestamp):
+    return time.strftime("%d-%m-%Y %H:%M:%S", time.localtime(timestamp))
 
 class Form(StatesGroup):
     language = State()
     name = State()
     age = State()
     parameter = State()
-    parameter_confirm = State()  # Qo'shimcha tekshiruv
+    parameter_confirm = State()
     role = State()
     city = State()
     goal = State()
@@ -78,6 +45,7 @@ class Form(StatesGroup):
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
+# Har bir til uchun matnlar, variantlar va sarlavhalar
 MESSAGES = {
     "O'zbek": {
         "welcome_text": "Assalom Aleykum!\nIltimos, menudan anketa tilini tanlang:",
@@ -216,6 +184,14 @@ MESSAGES = {
     }
 }
 
+# Yordamchi: Agar javob allaqachon berilgan bo'lsa, qaytib chiqamiz; aks holda flagni o'rnatamiz.
+async def check_and_set_answered(state: FSMContext):
+    data = await state.get_data()
+    if data.get("answered", False):
+        return True
+    await state.update_data(answered=True)
+    return False
+
 # ---------------- Handlers ----------------
 
 @dp.message_handler(commands=['start'])
@@ -223,12 +199,10 @@ async def send_welcome(message: types.Message, state: FSMContext):
     await state.finish()
     user_id = message.from_user.id
     now = time.time()
-    last = await get_last_submission(user_id)
-    if last is not None:
-        last_ts, saved_language = last
+    if user_id in user_last_submission:
+        last_ts, saved_language = user_last_submission[user_id]
         if now - last_ts < SESSION_TIMEOUT:
             remaining = SESSION_TIMEOUT - (now - last_ts)
-            # Faqat vaqt qismi
             last_time = format_submission_time(last_ts)
             parts = last_time.split(" ")
             display_time = parts[1] if len(parts) > 1 else last_time
@@ -239,7 +213,6 @@ async def send_welcome(message: types.Message, state: FSMContext):
                 parse_mode="HTML"
             )
             return
-
     welcome_text = "\n\n".join([
         MESSAGES["O'zbek"]["welcome_text"],
         MESSAGES["Русский"]["welcome_text"],
@@ -252,6 +225,8 @@ async def send_welcome(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=Form.language)
 async def process_language(message: types.Message, state: FSMContext):
+    if await check_and_set_answered(state):
+        return
     if message.text not in ["O'zbek", "Русский", "English"]:
         error_msg = "\n".join([
             MESSAGES["O'zbek"]["invalid_language"],
@@ -259,15 +234,18 @@ async def process_language(message: types.Message, state: FSMContext):
             MESSAGES["English"]["invalid_language"]
         ])
         await message.answer(error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+        await state.update_data(answered=False)
         return
-    await state.update_data(language=message.text)
+    await state.update_data(language=message.text, answered=False)
     await Form.next()
     localized = MESSAGES[message.text]
     await message.answer(localized["ask_name"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
 
 @dp.message_handler(state=Form.name)
 async def process_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
+    if await check_and_set_answered(state):
+        return
+    await state.update_data(name=message.text, answered=False)
     await Form.next()
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
@@ -276,30 +254,37 @@ async def process_name(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=Form.age)
 async def process_age(message: types.Message, state: FSMContext):
+    if await check_and_set_answered(state):
+        return
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
     if not message.text.isdigit() or not (16 <= int(message.text) <= 100):
         await message.answer(localized["invalid_age"])
+        await state.update_data(answered=False)
         return
-    await state.update_data(age=message.text)
+    await state.update_data(age=message.text, answered=False)
     await Form.next()
     await message.answer(localized["ask_parameter"], parse_mode="Markdown")
 
 @dp.message_handler(state=Form.parameter)
 async def process_parameter(message: types.Message, state: FSMContext):
+    if await check_and_set_answered(state):
+        return
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
     if not re.match(r'^\d{2,3}[-+]\d{2,3}[-+]\d{1,3}$', message.text):
         await message.answer(localized["invalid_parameter"])
+        await state.update_data(answered=False)
         return
-    await state.update_data(parameter=message.text)
+    await state.update_data(parameter=message.text, answered=False)
     parts = re.split(r'[-_+]', message.text)
     try:
         third_value = int(parts[2])
     except (IndexError, ValueError):
         await message.answer(localized["invalid_parameter"])
+        await state.update_data(answered=False)
         return
     if third_value > 20:
         keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -319,9 +304,12 @@ async def process_parameter(message: types.Message, state: FSMContext):
         await message.answer(localized["ask_role"], reply_markup=keyboard, parse_mode="Markdown")
     else:
         await message.answer(localized["invalid_parameter"])
+    await state.update_data(answered=False)
 
 @dp.message_handler(state=Form.parameter_confirm)
 async def process_parameter_confirm(message: types.Message, state: FSMContext):
+    if await check_and_set_answered(state):
+        return
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
@@ -337,6 +325,7 @@ async def process_parameter_confirm(message: types.Message, state: FSMContext):
     }
     if message.text not in [valid_positive[lang], valid_negative[lang]]:
         await message.answer(localized["invalid_choice"], parse_mode="Markdown")
+        await state.update_data(answered=False)
         return
     if message.text == valid_positive[lang]:
         keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -347,22 +336,28 @@ async def process_parameter_confirm(message: types.Message, state: FSMContext):
     else:
         await message.answer(localized["survey_cancelled"], reply_markup=ReplyKeyboardRemove())
         await state.finish()
+    await state.update_data(answered=False)
 
 @dp.message_handler(state=Form.role)
 async def process_role(message: types.Message, state: FSMContext):
+    if await check_and_set_answered(state):
+        return
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
     if message.text not in localized["role_options"]:
         await message.answer(localized["invalid_role"], parse_mode="Markdown")
+        await state.update_data(answered=False)
         return
-    await state.update_data(role=message.text)
+    await state.update_data(role=message.text, answered=False)
     await Form.next()
     await message.answer(localized["ask_city"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
 
 @dp.message_handler(state=Form.city)
 async def process_city(message: types.Message, state: FSMContext):
-    await state.update_data(city=message.text)
+    if await check_and_set_answered(state):
+        return
+    await state.update_data(city=message.text, answered=False)
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
@@ -374,19 +369,24 @@ async def process_city(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=Form.goal)
 async def process_goal(message: types.Message, state: FSMContext):
+    if await check_and_set_answered(state):
+        return
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
     if message.text not in localized["goal_options"]:
         await message.answer(localized["invalid_choice"], parse_mode="Markdown")
+        await state.update_data(answered=False)
         return
-    await state.update_data(goal=message.text)
+    await state.update_data(goal=message.text, answered=False)
     await Form.next()
     await message.answer(localized["ask_about"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
 
 @dp.message_handler(state=Form.about)
 async def process_about(message: types.Message, state: FSMContext):
-    await state.update_data(about=message.text)
+    if await check_and_set_answered(state):
+        return
+    await state.update_data(about=message.text, answered=False)
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
@@ -402,6 +402,8 @@ async def process_about(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=Form.photo_choice)
 async def process_photo_choice(message: types.Message, state: FSMContext):
+    if await check_and_set_answered(state):
+        return
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
@@ -412,24 +414,28 @@ async def process_photo_choice(message: types.Message, state: FSMContext):
     }
     if message.text not in valid[lang]:
         await message.answer(localized["invalid_choice"], parse_mode="Markdown")
+        await state.update_data(answered=False)
         return
     if message.text == valid[lang][0]:
         await Form.next()
         await message.answer(localized["ask_photo_upload"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
     else:
-        await state.update_data(photo_upload=None)
+        await state.update_data(photo_upload=None, answered=False)
         await Form.partner_age.set()
         await message.answer(localized["ask_partner_age"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
 
 @dp.message_handler(state=Form.photo_upload, content_types=types.ContentType.ANY)
 async def process_photo_upload(message: types.Message, state: FSMContext):
+    if await check_and_set_answered(state):
+        return
     if message.content_type != types.ContentType.PHOTO:
         data = await state.get_data()
         lang = data.get("language", "O'zbek")
         localized = MESSAGES[lang]
         await message.answer(localized["invalid_photo"], reply_markup=ReplyKeyboardRemove())
+        await state.update_data(answered=False)
         return
-    await state.update_data(photo_upload=message.photo[-1].file_id)
+    await state.update_data(photo_upload=message.photo[-1].file_id, answered=False)
     await Form.next()
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
@@ -438,11 +444,14 @@ async def process_photo_upload(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=Form.partner_age)
 async def process_partner_age(message: types.Message, state: FSMContext):
+    if await check_and_set_answered(state):
+        return
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
     if not re.match(r'^\d{2,3}[-+]\d{2,3}$', message.text):
         await message.answer(localized["invalid_partner_age"])
+        await state.update_data(answered=False)
         return
     try:
         ages = re.split(r'[-+]', message.text)
@@ -451,8 +460,9 @@ async def process_partner_age(message: types.Message, state: FSMContext):
             raise ValueError
     except:
         await message.answer(localized["invalid_partner_age"])
+        await state.update_data(answered=False)
         return
-    await state.update_data(partner_age=message.text)
+    await state.update_data(partner_age=message.text, answered=False)
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
     for role in localized["role_options"]:
         keyboard.add(KeyboardButton(role))
@@ -461,19 +471,24 @@ async def process_partner_age(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=Form.partner_role)
 async def process_partner_role(message: types.Message, state: FSMContext):
+    if await check_and_set_answered(state):
+        return
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
     if message.text not in localized["role_options"]:
         await message.answer(localized["invalid_role"], parse_mode="Markdown")
+        await state.update_data(answered=False)
         return
-    await state.update_data(partner_role=message.text)
+    await state.update_data(partner_role=message.text, answered=False)
     await Form.next()
     await message.answer(localized["ask_partner_city"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
 
 @dp.message_handler(state=Form.partner_city)
 async def process_partner_city(message: types.Message, state: FSMContext):
-    await state.update_data(partner_city=message.text)
+    if await check_and_set_answered(state):
+        return
+    await state.update_data(partner_city=message.text, answered=False)
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
@@ -482,7 +497,9 @@ async def process_partner_city(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=Form.partner_about)
 async def process_partner_about(message: types.Message, state: FSMContext):
-    await state.update_data(partner_about=message.text)
+    if await check_and_set_answered(state):
+        return
+    await state.update_data(partner_about=message.text, answered=False)
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
@@ -498,6 +515,8 @@ async def process_partner_about(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=Form.confirmation)
 async def process_confirmation(message: types.Message, state: FSMContext):
+    if await check_and_set_answered(state):
+        return
     data = await state.get_data()
     lang = data.get("language", "O'zbek")
     localized = MESSAGES[lang]
@@ -508,6 +527,7 @@ async def process_confirmation(message: types.Message, state: FSMContext):
     }
     if message.text not in valid[lang]:
         await message.answer(localized["invalid_choice"], parse_mode="Markdown")
+        await state.update_data(answered=False)
         return
     if message.text == valid[lang][0]:
         user_id = message.from_user.id
@@ -525,11 +545,14 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             "partner_city": data.get("partner_city"),
             "partner_about": data.get("partner_about")
         }
-        submission_id, sub_ts = await insert_submission(user_id, lang, submission_data)
-        # Format vaqt: faqat HH:MM:SS
-        sub_time = format_submission_time(sub_ts).split(" ")[1]
+        now = time.time()
+        user_last_submission[user_id] = (now, lang)
+        global survey_counter
+        current_id = survey_counter
+        survey_counter += 1
+        sub_time = format_submission_time(now).split(" ")[1]
         result_text = (
-            f"<b>{localized['survey_number']}:</b> {submission_id}\n\n"
+            f"<b>{localized['survey_number']}:</b> {current_id}\n\n"
             f"<b>{localized['about_me']}:</b>\n"
             f"<b>{localized['name']}:</b> {submission_data.get('name')}\n"
             f"<b>{localized['age']}:</b> {submission_data.get('age')}\n"
@@ -563,10 +586,5 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         await message.answer(localized["survey_cancelled"], reply_markup=ReplyKeyboardRemove())
     await state.finish()
 
-# ---------------- Bot Startup ----------------
-
-async def on_startup(dispatcher):
-    await init_db()
-
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    executor.start_polling(dp, skip_updates=True)
