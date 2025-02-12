@@ -1,6 +1,8 @@
 import time
 import re
+import json
 import asyncio
+import aiosqlite
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -8,25 +10,52 @@ from aiogram.utils import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
-API_TOKEN = "7543816231:AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"
+API_TOKEN = "7543816231:AAEBwP3cRFL5TUSrtwMhmCOAxNLKPVI6hoI"
 ADMIN_CHAT_ID = 7888045216
-
 SESSION_TIMEOUT = 6 * 60 * 60  # 6 soat
 
-# Foydalanuvchi oxirgi yuborgan anketasi haqidagi maʼlumotlar (timestamp va til)
-user_last_submission = {}
-# Har bir yaratilgan anketaga yagona, 1 dan boshlab oshib boruvchi ID
-survey_counter = 1
+DB_PATH = "surveys.db"
 
-def format_remaining_time(seconds):
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+# ---------------- Database Funksiyalari ----------------
 
-def format_submission_time(timestamp):
-    # Format: "dd-mm-YYYY HH:MM:SS"
-    return time.strftime("%d-%m-%Y %H:%M:%S", time.localtime(timestamp))
+async def init_db():
+    """Ma'lumotlar bazasini yaratish (agar mavjud bo'lmasa)"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS submissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                timestamp REAL,
+                language TEXT,
+                data TEXT
+            )
+        """)
+        await db.commit()
+
+async def get_last_submission(user_id: int):
+    """Berilgan user_id bo'yicha so'nggi anketani qaytaradi (timestamp, language)"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT timestamp, language FROM submissions WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1", 
+            (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row  # Agar topilmasa, None
+
+async def insert_submission(user_id: int, language: str, data: dict):
+    """Yangi anketani bazaga yozib, uning avtomatik generatsiyalangan ID va timestamp ni qaytaradi"""
+    now = time.time()
+    data_json = json.dumps(data)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO submissions (user_id, timestamp, language, data) VALUES (?, ?, ?, ?)",
+            (user_id, now, language, data_json)
+        )
+        await db.commit()
+        submission_id = cursor.lastrowid
+        return submission_id, now
+
+# ---------------- FSM va Matnlar ----------------
 
 class Form(StatesGroup):
     language = State()
@@ -49,7 +78,6 @@ class Form(StatesGroup):
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
-# Har bir til uchun matnlar, variantlar va sarlavhalar
 MESSAGES = {
     "O'zbek": {
         "welcome_text": "Assalom Aleykum!\nIltimos, menudan anketa tilini tanlang:",
@@ -188,25 +216,23 @@ MESSAGES = {
     }
 }
 
-# /start handler: Avvalgi FSM holati tozalanadi va agar foydalanuvchi oxirgi anketa yuborilganidan keyin SESSION_TIMEOUT (6 soat) o'tmagan bo'lsa, 
-# tanlangan til asosida oxirgi yuborilgan vaqt va qolgan kutish vaqti ko'rsatiladi.
+# ---------------- Handlers ----------------
+
 @dp.message_handler(commands=['start'])
 async def send_welcome(message: types.Message, state: FSMContext):
     await state.finish()
     user_id = message.from_user.id
     now = time.time()
-    if user_id in user_last_submission:
-        last_ts = user_last_submission[user_id]["timestamp"]
-        # Agar 6 soat o'tmagan bo'lsa bloklaymiz
+    last = await get_last_submission(user_id)
+    if last is not None:
+        last_ts, saved_language = last
         if now - last_ts < SESSION_TIMEOUT:
             remaining = SESSION_TIMEOUT - (now - last_ts)
+            # Faqat vaqt qismi
             last_time = format_submission_time(last_ts)
-            # Agar format_submission_time() "dd-mm-YYYY HH:MM:SS" shaklida bo'lsa, 
-            # biz faqat vaqt qismini olishimiz mumkin:
             parts = last_time.split(" ")
             display_time = parts[1] if len(parts) > 1 else last_time
-            lang = user_last_submission[user_id].get("language", "O'zbek")
-            localized = MESSAGES[lang]
+            localized = MESSAGES[saved_language]
             await message.answer(
                 localized["time_limit_message"].format(time=display_time, remaining=format_remaining_time(remaining)),
                 reply_markup=ReplyKeyboardRemove(),
@@ -224,7 +250,6 @@ async def send_welcome(message: types.Message, state: FSMContext):
     await message.reply(welcome_text, reply_markup=keyboard, parse_mode="Markdown")
     await Form.language.set()
 
-# Til tanlash: Faqat Form.language holatida noto'g'ri variant kiritsa, uchala tilning xatolik habarini yuboramiz.
 @dp.message_handler(state=Form.language)
 async def process_language(message: types.Message, state: FSMContext):
     if message.text not in ["O'zbek", "Русский", "English"]:
@@ -484,38 +509,45 @@ async def process_confirmation(message: types.Message, state: FSMContext):
     if message.text not in valid[lang]:
         await message.answer(localized["invalid_choice"], parse_mode="Markdown")
         return
-
     if message.text == valid[lang][0]:
-        global survey_counter
-        current_id = survey_counter
-        survey_counter += 1
         user_id = message.from_user.id
-        now = time.time()
-        # Qayd etamiz: foydalanuvchi ushbu vaqtda anketani yuborgan
-        user_last_submission[user_id] = {"timestamp": now, "language": lang}
-
+        submission_data = {
+            "name": data.get("name"),
+            "age": data.get("age"),
+            "parameter": data.get("parameter"),
+            "role": data.get("role"),
+            "city": data.get("city"),
+            "goal": data.get("goal"),
+            "about": data.get("about"),
+            "photo_upload": data.get("photo_upload"),
+            "partner_age": data.get("partner_age"),
+            "partner_role": data.get("partner_role"),
+            "partner_city": data.get("partner_city"),
+            "partner_about": data.get("partner_about")
+        }
+        submission_id, sub_ts = await insert_submission(user_id, lang, submission_data)
+        # Format vaqt: faqat HH:MM:SS
+        sub_time = format_submission_time(sub_ts).split(" ")[1]
         result_text = (
-            f"<b>{localized['survey_number']}:</b> {current_id}\n\n"
+            f"<b>{localized['survey_number']}:</b> {submission_id}\n\n"
             f"<b>{localized['about_me']}:</b>\n"
-            f"<b>{localized['name']}:</b> {data.get('name')}\n"
-            f"<b>{localized['age']}:</b> {data.get('age')}\n"
-            f"<b>{localized['parameters']}:</b> {data.get('parameter')}\n"
-            f"<b>{localized['role']}:</b> {data.get('role')}\n"
-            f"<b>{localized['location']}:</b> {data.get('city')}\n"
-            f"<b>{localized['goal']}:</b> {data.get('goal')}\n"
-            f"<b>{localized['about']}:</b>\n{data.get('about')}\n"
-            f"<a href=\"tg://user?id={message.from_user.id}\">{localized['profile_link']}</a>\n\n"
+            f"<b>{localized['name']}:</b> {submission_data.get('name')}\n"
+            f"<b>{localized['age']}:</b> {submission_data.get('age')}\n"
+            f"<b>{localized['parameters']}:</b> {submission_data.get('parameter')}\n"
+            f"<b>{localized['role']}:</b> {submission_data.get('role')}\n"
+            f"<b>{localized['location']}:</b> {submission_data.get('city')}\n"
+            f"<b>{localized['goal']}:</b> {submission_data.get('goal')}\n"
+            f"<b>{localized['about']}:</b>\n{submission_data.get('about')}\n"
+            f"<a href=\"tg://user?id={user_id}\">{localized['profile_link']}</a>\n\n"
             f"<b>{localized['partner']}:</b>\n"
-            f"<b>{localized['partner_age']}:</b> {data.get('partner_age')}\n"
-            f"<b>{localized['partner_role']}:</b> {data.get('partner_role')}\n"
-            f"<b>{localized['partner_location']}:</b> {data.get('partner_city')}\n"
-            f"<b>{localized['partner_about']}:</b> {data.get('partner_about')}\n"
+            f"<b>{localized['partner_age']}:</b> {submission_data.get('partner_age')}\n"
+            f"<b>{localized['partner_role']}:</b> {submission_data.get('partner_role')}\n"
+            f"<b>{localized['partner_location']}:</b> {submission_data.get('partner_city')}\n"
+            f"<b>{localized['partner_about']}:</b> {submission_data.get('partner_about')}\n"
         )
-
-        # Foydalanuvchiga natijani yuboramiz:
-        if data.get('photo_upload'):
+        if submission_data.get("photo_upload"):
             await message.answer_photo(
-                data['photo_upload'],
+                submission_data.get("photo_upload"),
                 caption=result_text,
                 parse_mode="HTML",
                 reply_markup=ReplyKeyboardRemove()
@@ -523,16 +555,18 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         else:
             await message.answer(result_text, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
         await message.answer(localized["survey_accepted"], parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
-
-        # Adminga jo'natish
-        if data.get('photo_upload'):
-            await bot.send_photo(ADMIN_CHAT_ID, data['photo_upload'], caption=result_text, parse_mode="HTML")
+        if submission_data.get("photo_upload"):
+            await bot.send_photo(ADMIN_CHAT_ID, submission_data.get("photo_upload"), caption=result_text, parse_mode="HTML")
         else:
             await bot.send_message(ADMIN_CHAT_ID, result_text, parse_mode="HTML")
     else:
         await message.answer(localized["survey_cancelled"], reply_markup=ReplyKeyboardRemove())
     await state.finish()
 
+# ---------------- Bot Startup ----------------
+
+async def on_startup(dispatcher):
+    await init_db()
+
 if __name__ == '__main__':
-    # Har bir handler darhol javob qaytarishi uchun event loop optimallashtirilgan
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
