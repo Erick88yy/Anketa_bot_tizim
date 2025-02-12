@@ -7,7 +7,7 @@ from aiogram.utils import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
-API_TOKEN = "7543816231:AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"
+API_TOKEN = "7543816231:AAEBwP3cRFL5TUSrtwMhmCOAxNLKPVI6hoI"
 ADMIN_CHAT_ID = 7888045216
 
 SESSION_TIMEOUT = 6 * 60 * 60  # 6 soat
@@ -186,7 +186,10 @@ MESSAGES = {
 }
 
 @dp.message_handler(commands=['start'])
-async def send_welcome(message: types.Message):
+async def send_welcome(message: types.Message, state: FSMContext):
+    # Avvalgi foydalanuvchi holatini tozalash
+    await state.finish()
+    
     user_id = message.from_user.id
     current_time = time.time()
     # Agar foydalanuvchi ilgari anketa yuborgan bo'lsa, ularning tilini olish:
