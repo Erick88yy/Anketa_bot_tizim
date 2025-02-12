@@ -1,2 +1,1 @@
-web: python
-Anketa_tizim_bot.py
+web: python Anketa_tizim_bot.py
