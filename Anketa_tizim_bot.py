@@ -7,20 +7,20 @@ from aiogram.utils import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
-API_TOKEN = "7543816231:AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"
+API_TOKEN = "7543816231:AAEBwP3cRFL5TUSrtwMhmCOAxNLKPVI6hoI"
 ADMIN_CHAT_ID = 7888045216
 
 SESSION_TIMEOUT = 6 * 60 * 60  # 6 soat
 
-# Foydalanuvchi soʻnggi yuborgan anketa haqidagi maʼlumotlar (timestamp va til)
+# Foydalanuvchi oxirgi yuborgan anketasi haqidagi ma'lumotlar (timestamp va til)
 user_last_submission = {}
 survey_counter = 1  # Global anketalar uchun ketma-ket ID (1 dan boshlanadi)
 
 def format_remaining_time(seconds):
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
-    seconds = int(seconds % 60)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    secs = int(seconds % 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 def format_submission_time(timestamp):
     return time.strftime("%d-%m-%Y %H:%M:%S", time.localtime(timestamp))
@@ -30,7 +30,7 @@ class Form(StatesGroup):
     name = State()
     age = State()
     parameter = State()
-    parameter_confirm = State()  # Qo'shimcha tekshiruv uchun
+    parameter_confirm = State()  # Qo'shimcha tekshiruv
     role = State()
     city = State()
     goal = State()
@@ -59,22 +59,22 @@ MESSAGES = {
         "ask_goal": "6. Tanishuvdan maqsadingiz:",
         "ask_about": "7. O'zingiz haqingizda qisqacha ma'lumot kiriting:",
         "ask_photo_choice": "8. Anketangiz uchun rasmingizni yuklamoqchimisiz?",
-        "ask_photo_upload": "Rasmingizni yuboring:",
-        "ask_partner_age": "9. Tanishmoqchi bo'lgan insoningizni yoshi (Masalan: 25-30):",
-        "ask_partner_role": "10. Tanishmoqchi bo'lgan insoningizni roli:",
-        "ask_partner_city": "11. Tanishmoqchi bo'lgan insoningizni manzili:",
-        "ask_partner_about": "12. Tanishmoqchi bo'lgan insoningiz haqida qisqacha tasavvuringiz:",
-        "ask_confirmation": "13. Anketangiz deyarli tayyor! Agar barcha ma'lumotlarni to'g'ri kiritgan bo'lsangiz, adminga yuborasizmi?",
+        "ask_photo_upload": "Iltimos, rasmingizni yuboring:",
+        "ask_partner_age": "9. Tanishmoqchi bo'lgan insoningiz yoshi (Masalan: 25-30):",
+        "ask_partner_role": "10. Tanishmoqchi bo'lgan insoningiz roli:",
+        "ask_partner_city": "11. Tanishmoqchi bo'lgan insoningiz manzili:",
+        "ask_partner_about": "12. Tanishmoqchi bo'lgan insoningiz haqida qisqacha ma'lumot:",
+        "ask_confirmation": "13. Anketangiz deyarli tayyor! Agar barcha ma'lumotlar to'g'ri bo'lsa, adminga yuborish uchun tasdiqlang:",
         "invalid_language": "Iltimos, menyudan tilni tanlang!",
-        "survey_restart": "❌ Anketa boshiga qaytdingiz. Yangi anketa uchun /start ni bosing.",
-        "invalid_age": "Iltimos, yoshingizni to'g'ri formatda kiriting (Masalan, 17 yoki 35):\n(Bizda 16 yoshga to'lmaganlardan anketa qabul qilinmaydi)",
+        "invalid_age": "Iltimos, yoshingizni to'g'ri formatda kiriting (Masalan, 17 yoki 35):\n(16 yoshdan kichiklardan anketa qabul qilinmaydi)",
         "invalid_parameter": "Iltimos, parametrlaringizni to'g'ri kiriting (Masalan, 182-70-17):",
         "invalid_choice": "Iltimos, menyudan javob variantini tanlang!",
         "invalid_role": "Iltimos, menyudan variant tanlang!",
-        "invalid_partner_age": "Iltimos, yosh chegarasini to'g'ri kiriting, Masalan 16-23 yoki 25-35:\n(Biz 16 yoshga to'lmaganlar bilan jinsiy aloqa va zo'ravonlikka qarshimiz)",
-        "survey_accepted": "✅ <b>Anketa qabul qilindi!</b>\nAnketangiz admin tekshiruvidan keyin kanalda e'lon qilinadi va sizga shu bot orqali habar beriladi.\nYangi anketa uchun <b>/start</b> ni bosing.",
+        "invalid_partner_age": "Iltimos, yosh oralig'ini to'g'ri kiriting (Masalan, 16-23 yoki 25-35):\n(16 yoshdan kichiklarga anketa qo'llanilmaydi)",
+        "invalid_photo": "Iltimos, faqat rasm yuboring!",
+        "survey_accepted": "✅ <b>Anketa qabul qilindi!</b>\nAnketangiz admin tomonidan tekshirilgandan so'ng kanalda e'lon qilinadi va sizga bot orqali habar beriladi.\nYangi anketa uchun /start ni bosing.",
         "survey_cancelled": "❌ Anketa bekor qilindi. Yangi anketa uchun /start ni bosing.",
-        "time_limit_message": "❌ Siz ohirgi marta <b>{date}</b> kuni soat <b>{time}</b> da anketa to'ldirdingiz.\nKeyingi anketani faqat <b>{remaining}</b> soatdan keyin to'ldira olasiz!",
+        "time_limit_message": "❌ Siz so‘nggi marta <b>{date}</b> kuni soat <b>{time}</b> da anketa to‘ldirgansiz.\nYangi anketa to‘ldirish uchun <b>{remaining}</b> soatdan keyin urinib ko‘ring.",
         "survey_number": "Anketa raqami",
         "about_me": "O'zim haqimda",
         "name": "Ism",
@@ -88,38 +88,38 @@ MESSAGES = {
         "partner_age": "Yosh",
         "partner_role": "Rol",
         "partner_location": "Manzil",
-        "partner_about": "U haqida",
-        "profile_link": "Mening profilmga havola",
+        "partner_about": "Haqida",
+        "profile_link": "Mening profilimga havola",
         "role_options": ["Aktiv", "Uni-Aktiv", "Universal", "Uni-Passiv", "Passiv"],
-        "goal_options": ["Do'stlik", "Seks", "Oila qurish", "Vertual aloqa", "Eskort"]
+        "goal_options": ["Do'stlik", "Seks", "Oila qurish", "Virtual aloqa", "Eskort"]
     },
     "Русский": {
         "welcome_text": "Привет! Добро пожаловать!\nПожалуйста, выберите язык анкеты:",
         "ask_name": "1. Введите ваше имя:",
         "ask_age": "2. Введите ваш возраст (например, 23 или 36):",
         "ask_parameter": "3. Введите ваши параметры (например: 178-65-18):",
-        "parameter_confirm": "Вы уверены, что длина вашего измерения более 20 см? Разве вам не будет стыдно, если кто-то увидит это через анкету?😕",
+        "parameter_confirm": "Вы уверены, что длина вашего измерения более 20 см? Вам не будет стыдно, если кто-то увидит это через анкету?😕",
         "ask_role": "4. Выберите вашу роль:",
         "ask_city": "5. Ваш адрес (регион/город):",
         "ask_goal": "6. Ваша цель знакомства:",
-        "ask_about": "7. Кратко расскажите о себе:",
+        "ask_about": "7. Расскажите кратко о себе:",
         "ask_photo_choice": "8. Хотите загрузить фотографию для анкеты?",
-        "ask_photo_upload": "Отправьте вашу фотографию:",
+        "ask_photo_upload": "Пожалуйста, отправьте фотографию:",
         "ask_partner_age": "9. Возраст человека, с которым хотите познакомиться (например, 25-30):",
         "ask_partner_role": "10. Роль человека, с которым хотите познакомиться:",
         "ask_partner_city": "11. Адрес человека, с которым хотите познакомиться:",
-        "ask_partner_about": "12. Кратко расскажите о человеке, с которым хотите познакомиться:",
-        "ask_confirmation": "13. Ваша анкета почти готова! Если вы ввели всю информацию правильно, отправить администратору?",
+        "ask_partner_about": "12. Расскажите кратко о человеке, с которым хотите познакомиться:",
+        "ask_confirmation": "13. Ваша анкета почти готова! Если все данные верны, подтвердите отправку администратору:",
         "invalid_language": "Пожалуйста, выберите язык из меню!",
-        "survey_restart": "❌ Вы вернулись к началу анкеты. Для новой анкеты нажмите /start.",
-        "invalid_age": "Пожалуйста, введите правильный возраст (например, 17 или 35):\n(Мы не принимаем анкеты от лиц младше 16 лет)",
+        "invalid_age": "Пожалуйста, введите правильный возраст (например, 17 или 35):\n(Анкеты от лиц младше 16 лет не принимаются)",
         "invalid_parameter": "Пожалуйста, введите параметры правильно (например, 182-70-17):",
-        "invalid_choice": "Пожалуйста, выберите ответ из меню",
+        "invalid_choice": "Пожалуйста, выберите вариант из меню!",
         "invalid_role": "Пожалуйста, выберите вариант из меню!",
-        "invalid_partner_age": "Пожалуйста, введите корректный возрастной диапазон, например 16-23 или 25-35:\n(Мы не поддерживаем анкеты для лиц младше 16 лет)",
-        "survey_accepted": "✅ <b>Анкета принята!</b>\nПосле проверки администратором анкета будет опубликована, и вы получите уведомление через этого бота.\nДля новой анкеты нажмите <b>/start</b>.",
+        "invalid_partner_age": "Пожалуйста, введите корректный возрастной диапазон (например, 16-23 или 25-35):\n(Анкеты для лиц младше 16 лет не поддерживаются)",
+        "invalid_photo": "Пожалуйста, отправьте фотографию!",
+        "survey_accepted": "✅ <b>Анкета принята!</b>\nПосле проверки администратором анкета будет опубликована, и вы получите уведомление через бота.\nДля новой анкеты нажмите /start.",
         "survey_cancelled": "❌ Анкета отменена. Для новой анкеты нажмите /start.",
-        "time_limit_message": "❌ Вы заполнили анкету в <b>{date}</b> в <b>{time}</b>.\nСледующую анкету можно заполнить через <b>{remaining}</b>.",
+        "time_limit_message": "❌ Вы заполнили анкету в <b>{date}</b> в <b>{time}</b>.\nПовторное заполнение возможно через <b>{remaining}</b>.",
         "survey_number": "Номер анкеты",
         "about_me": "О себе",
         "name": "Имя",
@@ -154,17 +154,17 @@ MESSAGES = {
         "ask_partner_role": "10. Role of the person you want to meet:",
         "ask_partner_city": "11. Location of the person you want to meet:",
         "ask_partner_about": "12. Provide a brief description of the person you want to meet:",
-        "ask_confirmation": "13. Your survey is almost ready! If all your information is correct, send it to the admin?",
+        "ask_confirmation": "13. Your survey is almost ready! If all your information is correct, confirm to send it to the admin:",
         "invalid_language": "Please select a language from the menu!",
-        "survey_restart": "❌ You have returned to the beginning of the survey. For a new survey, press /start.",
         "invalid_age": "Please enter a valid age (e.g., 17 or 35):\n(We do not accept surveys from those under 16)",
         "invalid_parameter": "Please enter your parameters correctly (e.g., 182-70-17):",
-        "invalid_choice": "Please select an option from the menu",
+        "invalid_choice": "Please select an option from the menu!",
         "invalid_role": "Please select an option from the menu!",
-        "invalid_partner_age": "Please enter a valid age range, e.g., 16-23 or 25-35:\n(We do not support surveys for users under 16)",
-        "survey_accepted": "✅ <b>Survey accepted!</b>\nAfter admin verification, your survey will be published in the channel and you will receive a notification via this bot.\nTo start a new survey, press <b>/start</b>.",
+        "invalid_partner_age": "Please enter a valid age range (e.g., 16-23 or 25-35):\n(We do not support surveys for users under 16)",
+        "invalid_photo": "Please send a photo!",
+        "survey_accepted": "✅ <b>Survey accepted!</b>\nAfter admin verification, your survey will be published in the channel and you will receive a notification via this bot.\nTo start a new survey, press /start.",
         "survey_cancelled": "❌ Survey cancelled. For a new survey, press /start.",
-        "time_limit_message": "❌ You filled out the survey on <b>{date}</b> at <b>{time}</b>.\nYou can fill out the next survey only after <b>{remaining}</b>.",
+        "time_limit_message": "❌ You filled out the survey on <b>{date}</b> at <b>{time}</b>.\nYou can fill out a new survey only after <b>{remaining}</b>.",
         "survey_number": "Survey Number",
         "about_me": "About Me",
         "name": "Name",
@@ -185,14 +185,12 @@ MESSAGES = {
     }
 }
 
+# /start buyrug‘i: Avvalgi holat tozalanadi va agar 6 soat ichida anketa to‘ldirilgan bo‘lsa, so‘nggi yuborilgan vaqt va qolgan kutish vaqti tanlangan tilga mos ko‘rsatiladi.
 @dp.message_handler(commands=['start'])
 async def send_welcome(message: types.Message, state: FSMContext):
-    # Avvalgi foydalanuvchi holatini tozalash
     await state.finish()
-
     user_id = message.from_user.id
     current_time = time.time()
-    # Agar foydalanuvchi ilgari anketa yuborgan bo'lsa, ularning tilini olish:
     if user_id in user_last_submission:
         submission_info = user_last_submission[user_id]
         last_timestamp = submission_info["timestamp"]
@@ -219,9 +217,9 @@ async def send_welcome(message: types.Message, state: FSMContext):
     await message.reply(welcome_text, reply_markup=keyboard, parse_mode="Markdown")
     await Form.language.set()
 
+# Tilni tanlash: Agar noto'g'ri kiritsa, uchala tilning xatolik habarlarini yuboramiz.
 @dp.message_handler(state=Form.language)
 async def process_language(message: types.Message, state: FSMContext):
-    # Faqat menyudan to'g'ri variant tanlanmasa, 3 ta til uchun xatolik habarini yuboramiz
     if message.text not in ["O'zbek", "Русский", "English"]:
         error_msg = (
             MESSAGES["O'zbek"]["invalid_language"] + "\n" +
@@ -393,8 +391,15 @@ async def process_photo_choice(message: types.Message, state: FSMContext):
         await Form.partner_age.set()
         await message.answer(localized["ask_partner_age"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
 
-@dp.message_handler(state=Form.photo_upload, content_types=types.ContentType.PHOTO)
-async def process_photo(message: types.Message, state: FSMContext):
+# Agar foydalanuvchi rasmdan boshqa narsa yuborsa, xatolik habarini ko'rsatamiz
+@dp.message_handler(state=Form.photo_upload, content_types=types.ContentType.ANY)
+async def process_photo_upload(message: types.Message, state: FSMContext):
+    if message.content_type != types.ContentType.PHOTO:
+        data = await state.get_data()
+        language = data.get("language", "O'zbek")
+        localized = MESSAGES[language]
+        await message.answer(localized["invalid_photo"])
+        return
     await state.update_data(photo_upload=message.photo[-1].file_id)
     data = await state.get_data()
     language = data.get("language", "O'zbek")
@@ -463,6 +468,7 @@ async def process_partner_about(message: types.Message, state: FSMContext):
     await Form.next()
     await message.answer(localized["ask_confirmation"], reply_markup=keyboard, parse_mode="Markdown")
 
+# Tasdiqlash bosqichi: agar foydalanuvchi tasdiqlasa, natija foydalanuvchiga va admin ga yuboriladi.
 @dp.message_handler(state=Form.confirmation)
 async def process_confirmation(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -478,7 +484,7 @@ async def process_confirmation(message: types.Message, state: FSMContext):
         return
 
     if message.text == valid_choices[language][0]:
-        data = await state.get_data()
+        # So'ngi anketani yuborish vaqtini qayd etamiz
         user_id = message.from_user.id
         user_last_submission[user_id] = {"timestamp": time.time(), "language": language}
         global survey_counter
@@ -503,6 +509,7 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             f"<b>{localized['partner_about']}:</b> {data.get('partner_about')}\n"
         )
 
+        # Foydalanuvchiga natijani yuboramiz (rasm bo'lsa, rasm bilan)
         if data.get('photo_upload'):
             await message.answer_photo(
                 data['photo_upload'],
@@ -516,9 +523,9 @@ async def process_confirmation(message: types.Message, state: FSMContext):
                 parse_mode="HTML",
                 reply_markup=ReplyKeyboardRemove()
             )
-
         await message.answer(localized["survey_accepted"], parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
 
+        # Adminga ham yuboramiz
         if data.get('photo_upload'):
             await bot.send_photo(
                 ADMIN_CHAT_ID,
