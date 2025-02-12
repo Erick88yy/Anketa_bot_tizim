@@ -7,7 +7,7 @@ from aiogram.utils import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
-API_TOKEN = "7543816231:AAEBwP3cRFL5TUSrtwMhmCOAxNLKPVI6hoI"
+API_TOKEN = "7543816231:AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"
 ADMIN_CHAT_ID = 7888045216
 
 SESSION_TIMEOUT = 6 * 60 * 60  # 6 soat
