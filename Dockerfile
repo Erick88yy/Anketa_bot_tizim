@@ -11,4 +11,4 @@ COPY . /app
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Ilovani ishga tushirish (asosiy fayl nomini o‘zgartiring)
-CMD ["python", "Anketa_bot_tizim.py"]
+CMD ["python", "Anketa_tizim_bot.py"]
