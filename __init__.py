@@ -1,0 +1,1 @@
+echo. > middlewares\init.py
