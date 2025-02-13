@@ -32,7 +32,8 @@ def format_remaining_time(seconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 def format_submission_time(timestamp):
-    return time.strftime("%d-%m-%Y %H:%M:%S", time.localtime(timestamp))
+    # Toshkent vaqti UTC+5 hisoblanadi
+    return time.strftime("%d-%m-%Y %H:%M:%S", time.gmtime(timestamp + 5 * 3600))
 
 class Form(StatesGroup):
     language = State()
@@ -51,8 +52,6 @@ class Form(StatesGroup):
     partner_city = State()
     partner_about = State()
     confirmation = State()
-
-from aiogram.dispatcher import FSMContext
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
