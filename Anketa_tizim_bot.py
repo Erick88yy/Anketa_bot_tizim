@@ -9,7 +9,6 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
 API_TOKEN = "7543816231:AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"  
-# O'zingizning tokeningizni kiriting
 ADMIN_CHAT_ID = 7888045216
 SESSION_TIMEOUT = 6 * 60 * 60  # 6 soat
 
@@ -52,6 +51,8 @@ class Form(StatesGroup):
     partner_city = State()
     partner_about = State()
     confirmation = State()
+
+from aiogram.dispatcher import FSMContext
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
@@ -195,18 +196,10 @@ MESSAGES = {
     }
 }
 
-# ---------------------------
-# FSM Handlers with per-user lock to ensure each answer is processed only once.
-# ---------------------------
-
-from aiogram.dispatcher import FSMContext
-
 @dp.message_handler(commands=['start'])
 async def send_welcome(message: types.Message, state: FSMContext):
-    # Har safar /start bosilganda FSM ni tozalaymiz.
     await state.finish()
     user_id = message.from_user.id
-    # Agar SESSION_TIMEOUT ichida yuborilgan anketa mavjud bo'lsa, vaqt cheklovi xabari ko'rsatiladi.
     if user_id in user_last_submission:
         submission_info = user_last_submission[user_id]
         last_timestamp = submission_info["timestamp"]
@@ -214,7 +207,6 @@ async def send_welcome(message: types.Message, state: FSMContext):
         if time.time() - last_timestamp < SESSION_TIMEOUT:
             remaining = SESSION_TIMEOUT - (time.time() - last_timestamp)
             last_time = format_submission_time(last_timestamp)
-            # last_time ni butun formatida chiqarish; agar kerak bo'lsa, sozlash mumkin.
             localized = MESSAGES[saved_language]
             await message.answer(
                 localized["time_limit_message"].format(date=last_time.split()[0], time=last_time.split()[1], remaining=format_remaining_time(remaining)),
@@ -222,7 +214,6 @@ async def send_welcome(message: types.Message, state: FSMContext):
                 parse_mode="HTML"
             )
             return
-    # Aks holda, welcome xabari va til tanlash menyusini chiqaramiz.
     welcome_text = "\n\n".join([
         MESSAGES["O'zbek"]["welcome_text"],
         MESSAGES["Русский"]["welcome_text"],
@@ -251,7 +242,6 @@ async def process_language(message: types.Message, state: FSMContext):
         await state.update_data(language=message.text)
         await Form.next()
         localized = MESSAGES[message.text]
-        # Til tanlandi, endi 1-chi savol: ismingizni so'raymiz.
         await message.answer(localized["ask_name"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
 
 @dp.message_handler(state=Form.name)
@@ -367,8 +357,7 @@ async def process_role(message: types.Message, state: FSMContext):
 @dp.message_handler(state=Form.city)
 async def process_city(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    lock = get_lock(user_id)
-    async with lock:
+    async with get_lock(user_id):
         await state.update_data(city=message.text)
         data = await state.get_data()
         language = data.get("language", "O'zbek")
@@ -382,8 +371,7 @@ async def process_city(message: types.Message, state: FSMContext):
 @dp.message_handler(state=Form.goal)
 async def process_goal(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    lock = get_lock(user_id)
-    async with lock:
+    async with get_lock(user_id):
         data = await state.get_data()
         language = data.get("language", "O'zbek")
         localized = MESSAGES[language]
@@ -397,8 +385,7 @@ async def process_goal(message: types.Message, state: FSMContext):
 @dp.message_handler(state=Form.about)
 async def process_about(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    lock = get_lock(user_id)
-    async with lock:
+    async with get_lock(user_id):
         await state.update_data(about=message.text)
         data = await state.get_data()
         language = data.get("language", "O'zbek")
@@ -416,8 +403,7 @@ async def process_about(message: types.Message, state: FSMContext):
 @dp.message_handler(state=Form.photo_choice)
 async def process_photo_choice(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    lock = get_lock(user_id)
-    async with lock:
+    async with get_lock(user_id):
         data = await state.get_data()
         language = data.get("language", "O'zbek")
         localized = MESSAGES[language]
@@ -440,8 +426,7 @@ async def process_photo_choice(message: types.Message, state: FSMContext):
 @dp.message_handler(state=Form.photo_upload, content_types=types.ContentType.ANY)
 async def process_photo_upload(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    lock = get_lock(user_id)
-    async with lock:
+    async with get_lock(user_id):
         if message.content_type != types.ContentType.PHOTO:
             data = await state.get_data()
             language = data.get("language", "O'zbek")
@@ -458,8 +443,7 @@ async def process_photo_upload(message: types.Message, state: FSMContext):
 @dp.message_handler(state=Form.partner_age)
 async def process_partner_age(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    lock = get_lock(user_id)
-    async with lock:
+    async with get_lock(user_id):
         data = await state.get_data()
         language = data.get("language", "O'zbek")
         localized = MESSAGES[language]
@@ -484,8 +468,7 @@ async def process_partner_age(message: types.Message, state: FSMContext):
 @dp.message_handler(state=Form.partner_role)
 async def process_partner_role(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    lock = get_lock(user_id)
-    async with lock:
+    async with get_lock(user_id):
         data = await state.get_data()
         language = data.get("language", "O'zbek")
         localized = MESSAGES[language]
@@ -572,7 +555,20 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             else:
                 await message.answer(result_text, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
             await message.answer(localized["survey_accepted"], parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
-            await bot.send_message(ADMIN_CHAT_ID, result_text, parse_mode="HTML")
+            # ADMIN: agar rasm bo'lsa rasm bilan, aks holda matn bilan yuborilsin
+            if data.get("photo_upload"):
+                await bot.send_photo(
+                    ADMIN_CHAT_ID,
+                    photo=data.get("photo_upload"),
+                    caption=result_text,
+                    parse_mode="HTML"
+                )
+            else:
+                await bot.send_message(
+                    ADMIN_CHAT_ID,
+                    result_text,
+                    parse_mode="HTML"
+                )
         else:
             await message.answer(localized["survey_cancelled"], reply_markup=ReplyKeyboardRemove())
         await state.finish()
