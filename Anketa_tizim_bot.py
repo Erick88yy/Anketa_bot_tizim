@@ -8,8 +8,8 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 from aiogram.utils import executor
 from asyncio import Lock
 
-API_TOKEN = 7543816231:'AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc'
-ADMIN_CHAT_ID = '7888045216'
+API_TOKEN = 7543816231:"AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"
+ADMIN_CHAT_ID = "7888045216"
 
 logging.basicConfig(level=logging.INFO)
 
