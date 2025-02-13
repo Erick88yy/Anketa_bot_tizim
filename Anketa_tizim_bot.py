@@ -7,6 +7,8 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.utils import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.dispatcher.middlewares import ThrottlingMiddleware
+from aiogram.utils.exceptions import Throttled
 
 API_TOKEN = "7543816231:AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"
 ADMIN_CHAT_ID = 7888045216
@@ -48,8 +50,363 @@ class Form(StatesGroup):
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
+# Throttling middleware – qisqa vaqt ichida ortiqcha xabarlarni oldini oladi
+dp.middleware.setup(ThrottlingMiddleware())
 
-# Har bir til uchun matnlar, variantlar va sarlavhalar
+# Global throttled xatoliklarni ushlash: bu duplicate xabarlar sababli yuzaga keladigan xatoliklarni eʼtibordan chetda qoldiradi.
+@dp.errors_handler(exception=Throttled)
+async def throttled_handler(update, exception):
+    # Agar foydalanuvchi juda tez-tez xabar yuborsa, hech qanday javob yubormaymiz
+    return True
+
+# /start handler: agar foydalanuvchi oxirgi anketa yuborganidan keyin SESSION_TIMEOUT (6 soat) o'tmagan bo'lsa, 
+# soat va qolgan vaqt ko'rsatiladi.
+@dp.message_handler(commands=['start'])
+async def send_welcome(message: types.Message, state: FSMContext):
+    # Agar yangi /start kiritilsa, avvalgi FSM holati tozalanadi.
+    await state.finish()
+    user_id = message.from_user.id
+    now = time.time()
+    if user_id in user_last_submission:
+        last_ts = user_last_submission[user_id]["timestamp"]
+        if now - last_ts < SESSION_TIMEOUT:
+            remaining = SESSION_TIMEOUT - (now - last_ts)
+            last_time = format_submission_time(last_ts)
+            parts = last_time.split(" ")
+            display_time = parts[1] if len(parts) > 1 else last_time
+            lang = user_last_submission[user_id].get("language", "O'zbek")
+            localized = MESSAGES[lang]
+            await message.answer(
+                localized["time_limit_message"].format(time=display_time, remaining=format_remaining_time(remaining)),
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode="HTML"
+            )
+            return
+
+    welcome_text = "\n\n".join([
+        MESSAGES["O'zbek"]["welcome_text"],
+        MESSAGES["Русский"]["welcome_text"],
+        MESSAGES["English"]["welcome_text"]
+    ])
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard.add(KeyboardButton("O'zbek"), KeyboardButton("Русский"), KeyboardButton("English"))
+    await message.reply(welcome_text, reply_markup=keyboard, parse_mode="Markdown")
+    await Form.language.set()
+
+@dp.message_handler(state=Form.language)
+async def process_language(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+    if text not in ["O'zbek", "Русский", "English"]:
+        error_msg = "\n".join([
+            MESSAGES["O'zbek"]["invalid_language"],
+            MESSAGES["Русский"]["invalid_language"],
+            MESSAGES["English"]["invalid_language"]
+        ])
+        await message.answer(error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+        return
+    await state.update_data(language=text)
+    await Form.next()
+    localized = MESSAGES[text]
+    # ReplyKeyboardRemove() – klaviatura bekor qilinadi, shunda noto'g'ri variant yuborilishi oldini oladi.
+    await message.answer(localized["ask_name"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+
+@dp.message_handler(state=Form.name)
+async def process_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text.strip())
+    await Form.next()
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    await message.answer(localized["ask_age"], parse_mode="Markdown")
+
+@dp.message_handler(state=Form.age)
+async def process_age(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    if not message.text.isdigit() or not (16 <= int(message.text) <= 100):
+        await message.answer(localized["invalid_age"], reply_markup=ReplyKeyboardRemove())
+        return
+    await state.update_data(age=message.text)
+    await Form.next()
+    await message.answer(localized["ask_parameter"], parse_mode="Markdown")
+
+@dp.message_handler(state=Form.parameter)
+async def process_parameter(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    if not re.match(r'^\d{2,3}[-+]\d{2,3}[-+]\d{1,3}$', message.text.strip()):
+        await message.answer(localized["invalid_parameter"], reply_markup=ReplyKeyboardRemove())
+        return
+    await state.update_data(parameter=message.text.strip())
+    parts = re.split(r'[-_+]', message.text.strip())
+    try:
+        third_value = int(parts[2])
+    except (IndexError, ValueError):
+        await message.answer(localized["invalid_parameter"], reply_markup=ReplyKeyboardRemove())
+        return
+    if third_value > 20:
+        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+        if lang == "O'zbek":
+            keyboard.add(KeyboardButton("Ha, ma'lumot to'g'ri"), KeyboardButton("Yo'q, adashibman unchalik uzun emas"))
+        elif lang == "Русский":
+            keyboard.add(KeyboardButton("Да, информация верна"), KeyboardButton("Нет, я ошибся, не такая длина"))
+        else:
+            keyboard.add(KeyboardButton("Yes, the information is correct"), KeyboardButton("No, I made a mistake"))
+        await Form.parameter_confirm.set()
+        await message.answer(localized["parameter_confirm"], reply_markup=keyboard, parse_mode="Markdown")
+    elif 1 <= third_value <= 20:
+        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+        for role in localized["role_options"]:
+            keyboard.add(KeyboardButton(role))
+        await Form.role.set()
+        await message.answer(localized["ask_role"], reply_markup=keyboard, parse_mode="Markdown")
+    else:
+        await message.answer(localized["invalid_parameter"], reply_markup=ReplyKeyboardRemove())
+
+@dp.message_handler(state=Form.parameter_confirm)
+async def process_parameter_confirm(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    valid_positive = {
+        "O'zbek": "Ha, ma'lumot to'g'ri",
+        "Русский": "Да, информация верна",
+        "English": "Yes, the information is correct"
+    }
+    valid_negative = {
+        "O'zbek": "Yo'q, adashibman unchalik uzun emas",
+        "Русский": "Нет, я ошибся, не такая длина",
+        "English": "No, I made a mistake"
+    }
+    if message.text.strip() not in [valid_positive[lang], valid_negative[lang]]:
+        await message.answer(localized["invalid_choice"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+        return
+    if message.text.strip() == valid_positive[lang]:
+        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+        for role in localized["role_options"]:
+            keyboard.add(KeyboardButton(role))
+        await Form.next()
+        await message.answer(localized["ask_role"], reply_markup=keyboard, parse_mode="Markdown")
+    else:
+        await message.answer(localized["survey_cancelled"], reply_markup=ReplyKeyboardRemove())
+        await state.finish()
+
+@dp.message_handler(state=Form.role)
+async def process_role(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    if message.text.strip() not in localized["role_options"]:
+        await message.answer(localized["invalid_role"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+        return
+    await state.update_data(role=message.text.strip())
+    await Form.next()
+    await message.answer(localized["ask_city"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+
+@dp.message_handler(state=Form.city)
+async def process_city(message: types.Message, state: FSMContext):
+    await state.update_data(city=message.text.strip())
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    for goal in localized["goal_options"]:
+        keyboard.add(KeyboardButton(goal))
+    await Form.next()
+    await message.answer(localized["ask_goal"], reply_markup=keyboard, parse_mode="Markdown")
+
+@dp.message_handler(state=Form.goal)
+async def process_goal(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    if message.text.strip() not in localized["goal_options"]:
+        await message.answer(localized["invalid_choice"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+        return
+    await state.update_data(goal=message.text.strip())
+    await Form.next()
+    await message.answer(localized["ask_about"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+
+@dp.message_handler(state=Form.about)
+async def process_about(message: types.Message, state: FSMContext):
+    await state.update_data(about=message.text.strip())
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    if lang == "O'zbek":
+        keyboard.add(KeyboardButton("Ha"), KeyboardButton("Yo'q"))
+    elif lang == "Русский":
+        keyboard.add(KeyboardButton("Да"), KeyboardButton("Нет"))
+    else:
+        keyboard.add(KeyboardButton("Yes"), KeyboardButton("No"))
+    await Form.next()
+    await message.answer(localized["ask_photo_choice"], reply_markup=keyboard, parse_mode="Markdown")
+
+@dp.message_handler(state=Form.photo_choice)
+async def process_photo_choice(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    valid = {
+        "O'zbek": ["Ha", "Yo'q"],
+        "Русский": ["Да", "Нет"],
+        "English": ["Yes", "No"]
+    }
+    if message.text.strip() not in valid[lang]:
+        await message.answer(localized["invalid_choice"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+        return
+    if message.text.strip() == valid[lang][0]:
+        await Form.next()
+        await message.answer(localized["ask_photo_upload"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+    else:
+        await state.update_data(photo_upload=None)
+        await Form.partner_age.set()
+        await message.answer(localized["ask_partner_age"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+
+@dp.message_handler(state=Form.photo_upload, content_types=types.ContentType.ANY)
+async def process_photo_upload(message: types.Message, state: FSMContext):
+    if message.content_type != types.ContentType.PHOTO:
+        data = await state.get_data()
+        lang = data.get("language", "O'zbek")
+        localized = MESSAGES[lang]
+        await message.answer(localized["invalid_photo"], reply_markup=ReplyKeyboardRemove())
+        return
+    await state.update_data(photo_upload=message.photo[-1].file_id)
+    await Form.next()
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    await message.answer(localized["ask_partner_age"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+
+@dp.message_handler(state=Form.partner_age)
+async def process_partner_age(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    if not re.match(r'^\d{2,3}[-+]\d{2,3}$', message.text.strip()):
+        await message.answer(localized["invalid_partner_age"], reply_markup=ReplyKeyboardRemove())
+        return
+    try:
+        ages = re.split(r'[-+]', message.text.strip())
+        age1, age2 = int(ages[0]), int(ages[1])
+        if not (16 <= age1 <= 99 and 16 <= age2 <= 99):
+            raise ValueError
+    except:
+        await message.answer(localized["invalid_partner_age"], reply_markup=ReplyKeyboardRemove())
+        return
+    await state.update_data(partner_age=message.text.strip())
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    for role in localized["role_options"]:
+        keyboard.add(KeyboardButton(role))
+    await Form.next()
+    await message.answer(localized["ask_partner_role"], reply_markup=keyboard, parse_mode="Markdown")
+
+@dp.message_handler(state=Form.partner_role)
+async def process_partner_role(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    if message.text.strip() not in localized["role_options"]:
+        await message.answer(localized["invalid_role"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+        return
+    await state.update_data(partner_role=message.text.strip())
+    await Form.next()
+    await message.answer(localized["ask_partner_city"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+
+@dp.message_handler(state=Form.partner_city)
+async def process_partner_city(message: types.Message, state: FSMContext):
+    await state.update_data(partner_city=message.text.strip())
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    await Form.next()
+    await message.answer(localized["ask_partner_about"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+
+@dp.message_handler(state=Form.partner_about)
+async def process_partner_about(message: types.Message, state: FSMContext):
+    await state.update_data(partner_about=message.text.strip())
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+    if lang == "O'zbek":
+        keyboard.add(KeyboardButton("Ha"), KeyboardButton("Yo'q"))
+    elif lang == "Русский":
+        keyboard.add(KeyboardButton("Да"), KeyboardButton("Нет"))
+    else:
+        keyboard.add(KeyboardButton("Yes"), KeyboardButton("No"))
+    await Form.next()
+    await message.answer(localized["ask_confirmation"], reply_markup=keyboard, parse_mode="Markdown")
+
+@dp.message_handler(state=Form.confirmation)
+async def process_confirmation(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("language", "O'zbek")
+    localized = MESSAGES[lang]
+    valid = {
+        "O'zbek": ["Ha", "Yo'q"],
+        "Русский": ["Да", "Нет"],
+        "English": ["Yes", "No"]
+    }
+    if message.text.strip() not in valid[lang]:
+        await message.answer(localized["invalid_choice"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+        return
+
+    if message.text.strip() == valid[lang][0]:
+        global survey_counter
+        current_id = survey_counter
+        survey_counter += 1
+        user_id = message.from_user.id
+        now = time.time()
+        # Foydalanuvchi bu vaqtda anketani yuborganligini qayd etamiz.
+        user_last_submission[user_id] = {"timestamp": now, "language": lang}
+
+        result_text = (
+            f"<b>{localized['survey_number']}:</b> {current_id}\n\n"
+            f"<b>{localized['about_me']}:</b>\n"
+            f"<b>{localized['name']}:</b> {data.get('name')}\n"
+            f"<b>{localized['age']}:</b> {data.get('age')}\n"
+            f"<b>{localized['parameters']}:</b> {data.get('parameter')}\n"
+            f"<b>{localized['role']}:</b> {data.get('role')}\n"
+            f"<b>{localized['location']}:</b> {data.get('city')}\n"
+            f"<b>{localized['goal']}:</b> {data.get('goal')}\n"
+            f"<b>{localized['about']}:</b>\n{data.get('about')}\n"
+            f"<a href=\"tg://user?id={message.from_user.id}\">{localized['profile_link']}</a>\n\n"
+            f"<b>{localized['partner']}:</b>\n"
+            f"<b>{localized['partner_age']}:</b> {data.get('partner_age')}\n"
+            f"<b>{localized['partner_role']}:</b> {data.get('partner_role')}\n"
+            f"<b>{localized['partner_location']}:</b> {data.get('partner_city')}\n"
+            f"<b>{localized['partner_about']}:</b> {data.get('partner_about')}\n"
+        )
+
+        if data.get('photo_upload'):
+            await message.answer_photo(
+                data['photo_upload'],
+                caption=result_text,
+                parse_mode="HTML",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        else:
+            await message.answer(result_text, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
+        await message.answer(localized["survey_accepted"], parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
+
+        # Adminga jo'natish:
+        if data.get('photo_upload'):
+            await bot.send_photo(ADMIN_CHAT_ID, data['photo_upload'], caption=result_text, parse_mode="HTML")
+        else:
+            await bot.send_message(ADMIN_CHAT_ID, result_text, parse_mode="HTML")
+    else:
+        await message.answer(localized["survey_cancelled"], reply_markup=ReplyKeyboardRemove())
+    await state.finish()
+
+# Ko‘p hollarda xabarlarni tez yuborish muammosini oldini olish uchun, har bir handler qisqa throttling mexanizmi orqali boshqariladi.
+if __name__ == '__main__':
+    executor.start_polling(dp, skip_updates=True)
+    
+# Matn va variantlar barcha tillarga mos ravishda saqlanadi.
 MESSAGES = {
     "O'zbek": {
         "welcome_text": "Assalom Aleykum!\nIltimos, menudan anketa tilini tanlang:",
@@ -187,352 +544,3 @@ MESSAGES = {
         "goal_options": ["Friendship", "Sex", "Marriage", "Virtual connection", "Escort"]
     }
 }
-
-# /start handler: Avvalgi FSM holati tozalanadi va agar foydalanuvchi oxirgi anketa yuborilganidan keyin SESSION_TIMEOUT (6 soat) o'tmagan bo'lsa, 
-# tanlangan til asosida oxirgi yuborilgan vaqt va qolgan kutish vaqti ko'rsatiladi.
-@dp.message_handler(commands=['start'])
-async def send_welcome(message: types.Message, state: FSMContext):
-    await state.finish()
-    user_id = message.from_user.id
-    now = time.time()
-    if user_id in user_last_submission:
-        last_ts = user_last_submission[user_id]["timestamp"]
-        # Agar 6 soat o'tmagan bo'lsa bloklaymiz
-        if now - last_ts < SESSION_TIMEOUT:
-            remaining = SESSION_TIMEOUT - (now - last_ts)
-            last_time = format_submission_time(last_ts)
-            # Agar format_submission_time() "dd-mm-YYYY HH:MM:SS" shaklida bo'lsa, 
-            # biz faqat vaqt qismini olishimiz mumkin:
-            parts = last_time.split(" ")
-            display_time = parts[1] if len(parts) > 1 else last_time
-            lang = user_last_submission[user_id].get("language", "O'zbek")
-            localized = MESSAGES[lang]
-            await message.answer(
-                localized["time_limit_message"].format(time=display_time, remaining=format_remaining_time(remaining)),
-                reply_markup=ReplyKeyboardRemove(),
-                parse_mode="HTML"
-            )
-            return
-
-    welcome_text = "\n\n".join([
-        MESSAGES["O'zbek"]["welcome_text"],
-        MESSAGES["Русский"]["welcome_text"],
-        MESSAGES["English"]["welcome_text"]
-    ])
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add(KeyboardButton("O'zbek"), KeyboardButton("Русский"), KeyboardButton("English"))
-    await message.reply(welcome_text, reply_markup=keyboard, parse_mode="Markdown")
-    await Form.language.set()
-
-# Til tanlash: Faqat Form.language holatida noto'g'ri variant kiritsa, uchala tilning xatolik habarini yuboramiz.
-@dp.message_handler(state=Form.language)
-async def process_language(message: types.Message, state: FSMContext):
-    if message.text not in ["O'zbek", "Русский", "English"]:
-        error_msg = "\n".join([
-            MESSAGES["O'zbek"]["invalid_language"],
-            MESSAGES["Русский"]["invalid_language"],
-            MESSAGES["English"]["invalid_language"]
-        ])
-        await message.answer(error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
-        return
-    await state.update_data(language=message.text)
-    await Form.next()
-    localized = MESSAGES[message.text]
-    await message.answer(localized["ask_name"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
-
-@dp.message_handler(state=Form.name)
-async def process_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await Form.next()
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    await message.answer(localized["ask_age"], parse_mode="Markdown")
-
-@dp.message_handler(state=Form.age)
-async def process_age(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    if not message.text.isdigit() or not (16 <= int(message.text) <= 100):
-        await message.answer(localized["invalid_age"])
-        return
-    await state.update_data(age=message.text)
-    await Form.next()
-    await message.answer(localized["ask_parameter"], parse_mode="Markdown")
-
-@dp.message_handler(state=Form.parameter)
-async def process_parameter(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    if not re.match(r'^\d{2,3}[-+]\d{2,3}[-+]\d{1,3}$', message.text):
-        await message.answer(localized["invalid_parameter"])
-        return
-    await state.update_data(parameter=message.text)
-    parts = re.split(r'[-_+]', message.text)
-    try:
-        third_value = int(parts[2])
-    except (IndexError, ValueError):
-        await message.answer(localized["invalid_parameter"])
-        return
-    if third_value > 20:
-        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-        if lang == "O'zbek":
-            keyboard.add(KeyboardButton("Ha, ma'lumot to'g'ri"), KeyboardButton("Yo'q, adashibman unchalik uzun emas"))
-        elif lang == "Русский":
-            keyboard.add(KeyboardButton("Да, информация верна"), KeyboardButton("Нет, я ошибся, не такая длина"))
-        else:
-            keyboard.add(KeyboardButton("Yes, the information is correct"), KeyboardButton("No, I made a mistake"))
-        await Form.parameter_confirm.set()
-        await message.answer(localized["parameter_confirm"], reply_markup=keyboard, parse_mode="Markdown")
-    elif 1 <= third_value <= 20:
-        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-        for role in localized["role_options"]:
-            keyboard.add(KeyboardButton(role))
-        await Form.role.set()
-        await message.answer(localized["ask_role"], reply_markup=keyboard, parse_mode="Markdown")
-    else:
-        await message.answer(localized["invalid_parameter"])
-
-@dp.message_handler(state=Form.parameter_confirm)
-async def process_parameter_confirm(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    valid_positive = {
-        "O'zbek": "Ha, ma'lumot to'g'ri",
-        "Русский": "Да, информация верна",
-        "English": "Yes, the information is correct"
-    }
-    valid_negative = {
-        "O'zbek": "Yo'q, adashibman unchalik uzun emas",
-        "Русский": "Нет, я ошибся, не такая длина",
-        "English": "No, I made a mistake"
-    }
-    if message.text not in [valid_positive[lang], valid_negative[lang]]:
-        await message.answer(localized["invalid_choice"], parse_mode="Markdown")
-        return
-    if message.text == valid_positive[lang]:
-        keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-        for role in localized["role_options"]:
-            keyboard.add(KeyboardButton(role))
-        await Form.next()
-        await message.answer(localized["ask_role"], reply_markup=keyboard, parse_mode="Markdown")
-    else:
-        await message.answer(localized["survey_cancelled"], reply_markup=ReplyKeyboardRemove())
-        await state.finish()
-
-@dp.message_handler(state=Form.role)
-async def process_role(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    if message.text not in localized["role_options"]:
-        await message.answer(localized["invalid_role"], parse_mode="Markdown")
-        return
-    await state.update_data(role=message.text)
-    await Form.next()
-    await message.answer(localized["ask_city"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
-
-@dp.message_handler(state=Form.city)
-async def process_city(message: types.Message, state: FSMContext):
-    await state.update_data(city=message.text)
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    for goal in localized["goal_options"]:
-        keyboard.add(KeyboardButton(goal))
-    await Form.next()
-    await message.answer(localized["ask_goal"], reply_markup=keyboard, parse_mode="Markdown")
-
-@dp.message_handler(state=Form.goal)
-async def process_goal(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    if message.text not in localized["goal_options"]:
-        await message.answer(localized["invalid_choice"], parse_mode="Markdown")
-        return
-    await state.update_data(goal=message.text)
-    await Form.next()
-    await message.answer(localized["ask_about"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
-
-@dp.message_handler(state=Form.about)
-async def process_about(message: types.Message, state: FSMContext):
-    await state.update_data(about=message.text)
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    if lang == "O'zbek":
-        keyboard.add(KeyboardButton("Ha"), KeyboardButton("Yo'q"))
-    elif lang == "Русский":
-        keyboard.add(KeyboardButton("Да"), KeyboardButton("Нет"))
-    else:
-        keyboard.add(KeyboardButton("Yes"), KeyboardButton("No"))
-    await Form.next()
-    await message.answer(localized["ask_photo_choice"], reply_markup=keyboard, parse_mode="Markdown")
-
-@dp.message_handler(state=Form.photo_choice)
-async def process_photo_choice(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    valid = {
-        "O'zbek": ["Ha", "Yo'q"],
-        "Русский": ["Да", "Нет"],
-        "English": ["Yes", "No"]
-    }
-    if message.text not in valid[lang]:
-        await message.answer(localized["invalid_choice"], parse_mode="Markdown")
-        return
-    if message.text == valid[lang][0]:
-        await Form.next()
-        await message.answer(localized["ask_photo_upload"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
-    else:
-        await state.update_data(photo_upload=None)
-        await Form.partner_age.set()
-        await message.answer(localized["ask_partner_age"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
-
-@dp.message_handler(state=Form.photo_upload, content_types=types.ContentType.ANY)
-async def process_photo_upload(message: types.Message, state: FSMContext):
-    if message.content_type != types.ContentType.PHOTO:
-        data = await state.get_data()
-        lang = data.get("language", "O'zbek")
-        localized = MESSAGES[lang]
-        await message.answer(localized["invalid_photo"], reply_markup=ReplyKeyboardRemove())
-        return
-    await state.update_data(photo_upload=message.photo[-1].file_id)
-    await Form.next()
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    await message.answer(localized["ask_partner_age"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
-
-@dp.message_handler(state=Form.partner_age)
-async def process_partner_age(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    if not re.match(r'^\d{2,3}[-+]\d{2,3}$', message.text):
-        await message.answer(localized["invalid_partner_age"])
-        return
-    try:
-        ages = re.split(r'[-+]', message.text)
-        age1, age2 = int(ages[0]), int(ages[1])
-        if not (16 <= age1 <= 99 and 16 <= age2 <= 99):
-            raise ValueError
-    except:
-        await message.answer(localized["invalid_partner_age"])
-        return
-    await state.update_data(partner_age=message.text)
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    for role in localized["role_options"]:
-        keyboard.add(KeyboardButton(role))
-    await Form.next()
-    await message.answer(localized["ask_partner_role"], reply_markup=keyboard, parse_mode="Markdown")
-
-@dp.message_handler(state=Form.partner_role)
-async def process_partner_role(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    if message.text not in localized["role_options"]:
-        await message.answer(localized["invalid_role"], parse_mode="Markdown")
-        return
-    await state.update_data(partner_role=message.text)
-    await Form.next()
-    await message.answer(localized["ask_partner_city"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
-
-@dp.message_handler(state=Form.partner_city)
-async def process_partner_city(message: types.Message, state: FSMContext):
-    await state.update_data(partner_city=message.text)
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    await Form.next()
-    await message.answer(localized["ask_partner_about"], reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
-
-@dp.message_handler(state=Form.partner_about)
-async def process_partner_about(message: types.Message, state: FSMContext):
-    await state.update_data(partner_about=message.text)
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    if lang == "O'zbek":
-        keyboard.add(KeyboardButton("Ha"), KeyboardButton("Yo'q"))
-    elif lang == "Русский":
-        keyboard.add(KeyboardButton("Да"), KeyboardButton("Нет"))
-    else:
-        keyboard.add(KeyboardButton("Yes"), KeyboardButton("No"))
-    await Form.next()
-    await message.answer(localized["ask_confirmation"], reply_markup=keyboard, parse_mode="Markdown")
-
-@dp.message_handler(state=Form.confirmation)
-async def process_confirmation(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    lang = data.get("language", "O'zbek")
-    localized = MESSAGES[lang]
-    valid = {
-        "O'zbek": ["Ha", "Yo'q"],
-        "Русский": ["Да", "Нет"],
-        "English": ["Yes", "No"]
-    }
-    if message.text not in valid[lang]:
-        await message.answer(localized["invalid_choice"], parse_mode="Markdown")
-        return
-
-    if message.text == valid[lang][0]:
-        global survey_counter
-        current_id = survey_counter
-        survey_counter += 1
-        user_id = message.from_user.id
-        now = time.time()
-        # Qayd etamiz: foydalanuvchi ushbu vaqtda anketani yuborgan
-        user_last_submission[user_id] = {"timestamp": now, "language": lang}
-
-        result_text = (
-            f"<b>{localized['survey_number']}:</b> {current_id}\n\n"
-            f"<b>{localized['about_me']}:</b>\n"
-            f"<b>{localized['name']}:</b> {data.get('name')}\n"
-            f"<b>{localized['age']}:</b> {data.get('age')}\n"
-            f"<b>{localized['parameters']}:</b> {data.get('parameter')}\n"
-            f"<b>{localized['role']}:</b> {data.get('role')}\n"
-            f"<b>{localized['location']}:</b> {data.get('city')}\n"
-            f"<b>{localized['goal']}:</b> {data.get('goal')}\n"
-            f"<b>{localized['about']}:</b>\n{data.get('about')}\n"
-            f"<a href=\"tg://user?id={message.from_user.id}\">{localized['profile_link']}</a>\n\n"
-            f"<b>{localized['partner']}:</b>\n"
-            f"<b>{localized['partner_age']}:</b> {data.get('partner_age')}\n"
-            f"<b>{localized['partner_role']}:</b> {data.get('partner_role')}\n"
-            f"<b>{localized['partner_location']}:</b> {data.get('partner_city')}\n"
-            f"<b>{localized['partner_about']}:</b> {data.get('partner_about')}\n"
-        )
-
-        # Foydalanuvchiga natijani yuboramiz:
-        if data.get('photo_upload'):
-            await message.answer_photo(
-                data['photo_upload'],
-                caption=result_text,
-                parse_mode="HTML",
-                reply_markup=ReplyKeyboardRemove()
-            )
-        else:
-            await message.answer(result_text, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
-        await message.answer(localized["survey_accepted"], parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
-
-        # Adminga jo'natish
-        if data.get('photo_upload'):
-            await bot.send_photo(ADMIN_CHAT_ID, data['photo_upload'], caption=result_text, parse_mode="HTML")
-        else:
-            await bot.send_message(ADMIN_CHAT_ID, result_text, parse_mode="HTML")
-    else:
-        await message.answer(localized["survey_cancelled"], reply_markup=ReplyKeyboardRemove())
-    await state.finish()
-
-if __name__ == '__main__':
-    # Har bir handler darhol javob qaytarishi uchun event loop optimallashtirilgan
-    executor.start_polling(dp, skip_updates=True)
