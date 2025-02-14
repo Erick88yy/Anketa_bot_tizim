@@ -8,7 +8,7 @@ from aiogram.utils import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
-API_TOKEN = "7830124377:AAFwI3fxsFzM0CY1C8FpKd4WC9vE7rvDohM"  # Bot tokenini shu yerga yozing
+API_TOKEN = "7543816231:AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"  # Bot tokenini shu yerga yozing
 ADMIN_CHAT_ID = 7888045216  # Admin chat ID raqamini shu yerga yozing
 SESSION_TIMEOUT = 6 * 60 * 60  # 6 soat
 
