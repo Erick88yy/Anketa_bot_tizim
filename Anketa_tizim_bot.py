@@ -2,22 +2,27 @@ import time
 import re
 import asyncio
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import (ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
+                           InlineKeyboardMarkup, InlineKeyboardButton)
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.utils import executor
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
-API_TOKEN = "7543816231:AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"  
-ADMIN_CHAT_ID = 7888045216
+# KONFIGURATSIYA – o'zingizga moslang:
+API_TOKEN = "7543816231:AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"            # Bot tokenini kiriting
+ADMIN_CHAT_ID = 7888045216                # Admin chat ID raqamini kiriting
+CHANNEL_USERNAME = "@geyznakomstvauz"    # Kanal username (masalan, @geyznakomstvauz)
 SESSION_TIMEOUT = 6 * 60 * 60  # 6 soat
 
 # Foydalanuvchi oxirgi yuborgan anketasi haqidagi ma'lumotlar (timestamp va til)
 user_last_submission = {}
 # Har bir yaratilgan anketaga yagona, ketma-ket ID
 survey_counter = 1
+# Adminga yuborilgan, ammo kanalga hali yuborilmagan anketalar uchun saqlovchi lug'at
+surveys_pending_publish = {}
 
-# Foydalanuvchi javoblarini bir vaqtning o'zida qayta ishlashni oldini olish uchun lock
+# Javoblarni bir vaqtning o'zida qayta ishlash uchun lock
 user_lock = {}
 
 def get_lock(user_id):
@@ -56,7 +61,7 @@ class Form(StatesGroup):
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
-# Har bir til uchun matnlar, variantlar va sarlavhalar
+# Matnlar va variantlar lug'ati
 MESSAGES = {
     "O'zbek": {
         "welcome_text": "Assalom Aleykum!\nIltimos, menudan anketa tilini tanlang:",
@@ -82,9 +87,9 @@ MESSAGES = {
         "invalid_role": "Iltimos, menyudan variant tanlang!",
         "invalid_partner_age": "Iltimos, yosh oralig'ini to'g'ri kiriting (Masalan, 16-23 yoki 25-35):\n(16 yoshdan kichiklarga anketa qo'llanilmaydi)",
         "invalid_photo": "Iltimos, faqat rasm yuboring!",
-        "survey_accepted": "✅ <b>Anketa qabul qilindi!</b>\nAnketangiz admin tomonidan tekshirilgandan so'ng kanalda e'lon qilinadi va sizga bot orqali habar beriladi.\nYangi anketa uchun /start ni bosing.",
+        "survey_accepted": "✅ <b>Anketa qabul qilindi!</b>\nAnketangiz admin tomonidan tekshirilgandan so'ng e'lon qilinadi va sizga bot orqali habar beriladi.\nYangi anketa uchun /start ni bosing.",
         "survey_cancelled": "❌ Anketa bekor qilindi. Yangi anketa uchun /start ni bosing.",
-        "time_limit_message": "❌ Siz so‘nggi marta <b>{date}</b> kuni soat <b>{time}</b> da anketa to‘ldirgansiz.\nYangi anketa to‘ldirish uchun <b>{remaining}</b> soatdan keyin urinib ko‘ring.",
+        "time_limit_message": "❌ Siz so‘nggi marta <b>{date}</b> kuni soat <b>{time}</b> da anketa to‘ldirgansiz.\nYangi anketa uchun <b>{remaining}</b> soatdan keyin urinib ko‘ring.",
         "survey_number": "Anketa raqami",
         "about_me": "O'zim haqimda",
         "name": "Ism",
@@ -100,6 +105,8 @@ MESSAGES = {
         "partner_location": "Manzil",
         "partner_about": "Haqida",
         "profile_link": "Mening profilimga havola",
+        "publish_button": "Kanalda e'lon qilish",
+        "published_message": "Sizning anketangiz {channel} kanalida e'lon qilindi. Anketa raqamingiz: {survey_id}",
         "role_options": ["Aktiv", "Uni-Aktiv", "Universal", "Uni-Passiv", "Passiv"],
         "goal_options": ["Do'stlik", "Seks", "Oila qurish", "Virtual aloqa", "Eskort"]
     },
@@ -145,6 +152,8 @@ MESSAGES = {
         "partner_location": "Адрес",
         "partner_about": "О нём/ней",
         "profile_link": "Ссылка на мой профиль",
+        "publish_button": "Опубликовать",
+        "published_message": "Ваша анкета {channel} опубликована. Номер анкеты: {survey_id}",
         "role_options": ["Актив", "Уни-Актив", "Универсал", "Уни-Пассив", "Пассив"],
         "goal_options": ["Дружба", "Секс", "Создание семьи", "Виртуальное общение", "Эскорт"]
     },
@@ -190,6 +199,8 @@ MESSAGES = {
         "partner_location": "Location",
         "partner_about": "About",
         "profile_link": "Profile Link",
+        "publish_button": "Publish",
+        "published_message": "Your survey has been published in the {channel} channel. Survey ID: {survey_id}",
         "role_options": ["Active", "Uni-Active", "Universal", "Uni-Passive", "Passive"],
         "goal_options": ["Friendship", "Sex", "Marriage", "Virtual connection", "Escort"]
     }
@@ -208,7 +219,11 @@ async def send_welcome(message: types.Message, state: FSMContext):
             last_time = format_submission_time(last_timestamp)
             localized = MESSAGES[saved_language]
             await message.answer(
-                localized["time_limit_message"].format(date=last_time.split()[0], time=last_time.split()[1], remaining=format_remaining_time(remaining)),
+                localized["time_limit_message"].format(
+                    date=last_time.split()[0],
+                    time=last_time.split()[1],
+                    remaining=format_remaining_time(remaining)
+                ),
                 reply_markup=ReplyKeyboardRemove(),
                 parse_mode="HTML"
             )
@@ -234,9 +249,13 @@ async def process_language(message: types.Message, state: FSMContext):
                 MESSAGES["Русский"]["invalid_language"],
                 MESSAGES["English"]["invalid_language"]
             ])
-            await message.answer(error_msg, reply_markup=ReplyKeyboardMarkup(resize_keyboard=True).add(
-                KeyboardButton("O'zbek"), KeyboardButton("Русский"), KeyboardButton("English")
-            ), parse_mode="Markdown")
+            await message.answer(
+                error_msg,
+                reply_markup=ReplyKeyboardMarkup(resize_keyboard=True).add(
+                    KeyboardButton("O'zbek"), KeyboardButton("Русский"), KeyboardButton("English")
+                ),
+                parse_mode="Markdown"
+            )
             return
         await state.update_data(language=message.text)
         await Form.next()
@@ -472,7 +491,7 @@ async def process_partner_role(message: types.Message, state: FSMContext):
         language = data.get("language", "O'zbek")
         localized = MESSAGES[language]
         if message.text not in localized["role_options"]:
-            await message.answer(localized["invalid_role"], reply_markup=ReplyKeyboardRemove())
+            await message.answer(localized["invalid_role"], parse_mode="Markdown")
             return
         await state.update_data(partner_role=message.text)
         await Form.next()
@@ -527,6 +546,7 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             current_id = survey_counter
             survey_counter += 1
             user_last_submission[user_id] = {"timestamp": time.time(), "language": language}
+            # Natija matni: Profil havolasi matnning o'rtasida, "O'zim haqimda:" bo'limidan keyin joylashadi.
             result_text = (
                 f"<b>{localized['survey_number']}:</b> {current_id}\n\n"
                 f"<b>{localized['about_me']}:</b>\n"
@@ -536,7 +556,7 @@ async def process_confirmation(message: types.Message, state: FSMContext):
                 f"<b>{localized['role']}:</b> {data.get('role')}\n"
                 f"<b>{localized['location']}:</b> {data.get('city')}\n"
                 f"<b>{localized['goal']}:</b> {data.get('goal')}\n"
-                f"<b>{localized['about']}:</b>\n{data.get('about')}\n"
+                f"<b>{localized['about']}:</b>\n{data.get('about')}\n\n"
                 f"<a href=\"tg://user?id={user_id}\">{localized['profile_link']}</a>\n\n"
                 f"<b>{localized['partner']}:</b>\n"
                 f"<b>{localized['partner_age']}:</b> {data.get('partner_age')}\n"
@@ -544,6 +564,16 @@ async def process_confirmation(message: types.Message, state: FSMContext):
                 f"<b>{localized['partner_location']}:</b> {data.get('partner_city')}\n"
                 f"<b>{localized['partner_about']}:</b> {data.get('partner_about')}\n"
             )
+            # Foydalanuvchi username saqlanadi (agar mavjud bo'lsa)
+            username = message.from_user.username
+            surveys_pending_publish[current_id] = {
+                "user_id": user_id,
+                "username": username,
+                "language": language,
+                "text": result_text,
+                "photo": data.get("photo_upload")
+            }
+            # Foydalanuvchiga xabar: Natija matni (inline havola bu yerda kiritilmagan)
             if data.get("photo_upload"):
                 await message.answer_photo(
                     data.get("photo_upload"),
@@ -554,23 +584,84 @@ async def process_confirmation(message: types.Message, state: FSMContext):
             else:
                 await message.answer(result_text, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
             await message.answer(localized["survey_accepted"], parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
-            # ADMIN: agar rasm bo'lsa rasm bilan, aks holda matn bilan yuborilsin
+            # Adminga yuborish: Inline klaviatura – 1-qator: profil havolasi, 2-qator: "Kanalda e'lon qilish" tugmasi.
+            admin_kb = InlineKeyboardMarkup()
+            admin_kb.add(InlineKeyboardButton(localized['profile_link'], url=f"tg://user?id={user_id}"))
+            admin_kb.add(InlineKeyboardButton(localized['publish_button'], callback_data=f"publish:{current_id}"))
             if data.get("photo_upload"):
                 await bot.send_photo(
                     ADMIN_CHAT_ID,
                     photo=data.get("photo_upload"),
                     caption=result_text,
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    reply_markup=admin_kb
                 )
             else:
                 await bot.send_message(
                     ADMIN_CHAT_ID,
                     result_text,
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    reply_markup=admin_kb
                 )
         else:
             await message.answer(localized["survey_cancelled"], reply_markup=ReplyKeyboardRemove())
         await state.finish()
+
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith("publish:"))
+async def process_publish_callback(callback_query: types.CallbackQuery):
+    survey_id_str = callback_query.data.split(":")[1]
+    try:
+        survey_id = int(survey_id_str)
+    except ValueError:
+        await callback_query.answer("Xato survey id", show_alert=True)
+        return
+    survey_data = surveys_pending_publish.get(survey_id)
+    if not survey_data:
+        await callback_query.answer("Bu anketa allaqachon e'lon qilingan yoki topilmadi", show_alert=True)
+        return
+    user_id = survey_data["user_id"]
+    language = survey_data["language"]
+    result_text = survey_data["text"]
+    photo = survey_data["photo"]
+    channel_username = CHANNEL_USERNAME  # Kanal manzili
+    # Foydalanuvchi profil havolasi: agar username mavjud bo'lsa, shunday; aks holda user_id
+    username = survey_data.get("username")
+    if username:
+        profile_url = f"https://t.me/{username}"
+    else:
+        profile_url = f"tg://user?id={user_id}"
+    # Kanalga yuborilayotgan xabarda inline klaviatura qo'shilmaydi
+    try:
+        if photo:
+            await bot.send_photo(
+                channel_username,
+                photo=photo,
+                caption=result_text,
+                parse_mode="HTML",
+                reply_markup=None
+            )
+        else:
+            await bot.send_message(
+                channel_username,
+                result_text,
+                parse_mode="HTML",
+                reply_markup=None
+            )
+    except Exception as e:
+        await callback_query.answer(f"Xato: {str(e)}", show_alert=True)
+        return
+    # Tugmani olib tashlash (agar mavjud bo'lsa)
+    try:
+        await bot.edit_message_reply_markup(callback_query.message.chat.id, callback_query.message.message_id, reply_markup=None)
+    except Exception as e:
+        print(f"Tugma olib tashlanishda xato: {e}")
+    await callback_query.answer("Anketa kanalga yuborildi!", show_alert=True)
+    published_message = MESSAGES[language]["published_message"].format(survey_id=survey_id, channel=channel_username)
+    try:
+        await bot.send_message(user_id, published_message, parse_mode="HTML")
+    except Exception as e:
+        print(f"Foydalanuvchiga xabar yuborishda xato: {e}")
+    del surveys_pending_publish[survey_id]
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
