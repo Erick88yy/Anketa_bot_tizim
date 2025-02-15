@@ -574,4 +574,3 @@ async def process_confirmation(message: types.Message, state: FSMContext):
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
-Файл не выбранФайл не выбран
