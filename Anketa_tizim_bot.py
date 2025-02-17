@@ -18,7 +18,7 @@ SESSION_TIMEOUT = 6 * 60 * 60  # 6 soat
 # Foydalanuvchi oxirgi yuborgan anketasi haqidagi ma'lumotlar (timestamp va til)
 user_last_submission = {}
 # Har bir yaratilgan anketaga yagona, ketma-ket ID
-survey_counter = 1
+survey_counter = 42
 # Adminga yuborilgan, ammo kanalga hali yuborilmagan anketalar uchun saqlovchi lug'at
 surveys_pending_publish = {}
 
