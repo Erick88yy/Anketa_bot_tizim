@@ -246,7 +246,7 @@ async def send_welcome(message: types.Message, state: FSMContext):
     )
 
     lang_markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    lang_markup.add(KeyboardButton("O'zbek"), KeyboardButton("Русский"), KeyboardButton("English"))
+    lang_markup.add(KeyboardButton("🇺🇿O'zbek"), KeyboardButton("🇷🇺Русский"), KeyboardButton("🇬🇧English"))
 
     await message.answer(welcome_text, reply_markup=lang_markup, parse_mode="Markdown")
     await Form.language.set()  # Tilni tanlash bosqichiga o‘tish
