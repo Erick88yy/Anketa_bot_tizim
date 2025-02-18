@@ -10,7 +10,7 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
 # KONFIGURATSIYA – o'zingizga moslang:
-API_TOKEN = "7543816231:AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"   # Bot tokenini kiriting
+API_TOKEN = "7543816231:AAHRGV5Kq4OK2PmiPGdLN82laZSdXLFnBxc"            # Bot tokenini kiriting
 ADMIN_CHAT_ID = 7888045216                # Admin chat ID raqamini kiriting
 CHANNEL_USERNAME = "@geyznakomstvauz"    # Kanal username (masalan, @geyznakomstvauz)
 SESSION_TIMEOUT = 6 * 60 * 60  # 6 soat
@@ -225,31 +225,57 @@ MESSAGES = {
     }
 }
 
-@dp.message_handler(commands=['start'])
+@dp.message_handler(commands=['start'], state='*')  # Har qanday holatda /start ni qabul qilish
 async def send_welcome(message: types.Message, state: FSMContext):
-    await state.finish()  # FSM to‘xtatiladi
-    await state.reset_state(with_data=False)  # To‘liq tozalanadi
     user_id = message.from_user.id
-
-    # Eski anketani butunlay o‘chirish
+    
+    # Foydalanuvchi holatini to'liq tozalash
+    current_state = await state.get_state()
+    if current_state:
+        await state.finish()
+        await state.reset_state(with_data=True)
+    
+    # Vaqt chegarasini tekshirish
     if user_id in user_last_submission:
-        del user_last_submission[user_id]
-
-    # Klaviaturani to‘liq olib tashlash
+        submission_data = user_last_submission[user_id]
+        current_time = time.time()
+        elapsed_time = current_time - submission_data['timestamp']
+        
+        if elapsed_time < SESSION_TIMEOUT:
+            # Qolgan vaqtni hisoblash
+            remaining = SESSION_TIMEOUT - elapsed_time
+            formatted_datetime = format_submission_time(submission_data['timestamp'])
+            formatted_date, formatted_time = formatted_datetime.split(' ')
+            
+            # Tilga mos xabarni yuborish
+            language = submission_data['language']
+            localized = MESSAGES.get(language, MESSAGES["O'zbek"])
+            time_limit_msg = localized["time_limit_message"].format(
+                date=formatted_date,
+                time=formatted_time,
+                remaining=format_remaining_time(remaining)
+            )
+            await message.answer(time_limit_msg, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
+            return  # Yangi anketa boshlashga ruxsat bermaymiz
+        
+        else:
+            # Vaqt chegarasi o'tgan, eski ma'lumotni o'chiramiz
+            del user_last_submission[user_id]
+    
+    # Yangi anketa boshlash
     await message.answer("⏳ Yuklanmoqda...", reply_markup=ReplyKeyboardRemove())
-
+    
     # Til tanlash menyusi
     welcome_text = (
         "🇺🇿 Assalomu alaykum! Iltimos, tilni tanlang:\n"
         "🇷🇺 Здравствуйте! Пожалуйста, выберите язык:\n"
         "🇬🇧 Hello! Please select a language:"
     )
-
     lang_markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     lang_markup.add(KeyboardButton("O'zbek"), KeyboardButton("Русский"), KeyboardButton("English"))
-
+    
     await message.answer(welcome_text, reply_markup=lang_markup, parse_mode="Markdown")
-    await Form.language.set()  # Tilni tanlash bosqichiga o‘tish
+    await Form.language.set()
 
 @dp.message_handler(state=Form.language)
 async def process_language(message: types.Message, state: FSMContext):
